@@ -8,8 +8,9 @@ const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const { MongoMemoryServer } = require('mongodb-memory-server');
 const crypto = require('crypto');
-const axios = require('axios');
+
 const User = require('./models/User');
+const Transaction = require('./models/Transaction');
 
 const app = express();
 app.use(express.json());
@@ -34,13 +35,13 @@ app.use(cors({
 async function connectDB() {
     try {
         if (MONGODB_URI) {
-            await mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true });
+            await mongoose.connect(MONGODB_URI);
             console.log('MongoDB connected via MONGODB_URI');
         } else {
             // In-memory fallback for dev convenience
             const mongod = await MongoMemoryServer.create();
             const uri = mongod.getUri();
-            await mongoose.connect(uri, { useNewUrlParser: true, useUnifiedTopology: true });
+            await mongoose.connect(uri);
             console.log('MongoMemoryServer started (in-memory MongoDB)');
         }
     } catch (err) {
@@ -61,7 +62,8 @@ async function authMiddleware(req, res, next) {
         const token = req.cookies[COOKIE_NAME];
         if (!token) return res.status(401).json({ message: 'Unauthorized' });
         const decoded = jwt.verify(token, JWT_SECRET);
-        const user = await User.findById(decoded.id).lean();
+        // load full user document (not lean) so that later updates can be done if needed
+        const user = await User.findById(decoded.id);
         if (!user) return res.status(401).json({ message: 'Unauthorized' });
         req.user = user;
         next();
@@ -85,6 +87,26 @@ function computeDistribution(salary, splits, extraIncome = 0) {
         out[k] = Math.round((total * Number(splits[k] || 0)) / 100);
     });
     return out;
+}
+
+// Helper: ensure user's automation for the month (runs once per month when needed)
+// Simplified: no distributionByMonth structure, only update top-level distribution and lastAutomatedMonth
+async function ensureMonthlyAutomation(userId) {
+    const user = await User.findById(userId);
+    if (!user) return;
+    if (!user.automate) return; // nothing to do
+
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    if (user.lastAutomatedMonth === currentMonth) return; // already ran
+
+    // compute distribution for current month from salary + splits
+    const splits = user.splits || {};
+    const salary = Number(user.salary || 0);
+    const distributed = computeDistribution(salary, splits, 0);
+
+    user.distribution = distributed;
+    user.lastAutomatedMonth = currentMonth;
+    await user.save();
 }
 
 // health
@@ -139,36 +161,10 @@ app.post('/api/auth/logout', (req, res) => {
     res.json({ ok: true });
 });
 
-// Helper: ensure user's automation for the month (runs once per month when needed)
-async function ensureMonthlyAutomation(userId) {
-    const user = await User.findById(userId).lean();
-    if (!user) return;
-    if (!user.automate) return; // nothing to do
-    const currentMonth = new Date().toISOString().slice(0, 7);
-    if (user.lastAutomatedMonth === currentMonth) return; // already ran
-    // if salaryLockedMonth matches currentMonth AND distributionByMonth already exists for month, skip
-    const locked = user.salaryLockedMonth || '';
-    if (locked === currentMonth && (user.distributionByMonth && (user.distributionByMonth.get ? user.distributionByMonth.get(currentMonth) : user.distributionByMonth[currentMonth]))) {
-        // mark lastAutomatedMonth to avoid re-run
-        await User.findByIdAndUpdate(userId, { $set: { lastAutomatedMonth: currentMonth } });
-        return;
-    }
-    // compute distribution for currentMonth and persist
-    const splits = user.splits || {};
-    const salary = Number(user.salary || 0);
-    const distributed = computeDistribution(salary, splits, 0);
-    const update = { $set: {} };
-    update.$set[`distributionByMonth.${currentMonth}`] = distributed;
-    // also update top-level distribution if currentMonth
-    update.$set.distribution = distributed;
-    update.$set.lastAutomatedMonth = currentMonth;
-    await User.findByIdAndUpdate(userId, update, { new: true });
-}
-
 // get current user (auth + automation check)
+// this route returns only fields frontend needs; distribution stays top-level only
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
     try {
-        // run monthly automation if needed (runs once per user when they fetch profile first time in month)
         try {
             await ensureMonthlyAutomation(req.user._id);
         } catch (err) {
@@ -178,21 +174,21 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
         const fresh = await User.findById(req.user._id).lean();
         if (!fresh) return res.status(401).json({ message: 'Unauthorized' });
 
-        // return load of fields front-end needs
         const {
-            _id, email, name, salary, splits, distribution, distributionByMonth,
-            preset, currency, transactions, subscribed, automate, activeTracking,
+            _id, email, name, salary, splits, distribution,
+            preset, currency, subscribed, automate, activeTracking,
             salaryHistory, salaryLockedMonth, startMonth, onboardComplete, lastAutomatedMonth
         } = fresh;
 
         res.json({
             id: _id,
-            email, name, salary, splits,
+            email,
+            name,
+            salary,
+            splits,
             distribution: distribution || null,
-            distributionByMonth: distributionByMonth || {},
             preset: preset || null,
             currency,
-            transactions: transactions || [],
             subscribed: Boolean(subscribed),
             automate: Boolean(automate),
             activeTracking: Boolean(activeTracking),
@@ -208,7 +204,7 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
     }
 });
 
-// forgot/reset password (unchanged except small return)
+// forgot/reset password (unchanged)
 app.post('/api/auth/forgot-password', async (req, res) => {
     try {
         const { email } = req.body;
@@ -241,77 +237,22 @@ app.post('/api/auth/reset-password', async (req, res) => {
     }
 });
 
-/*
-  Google OAuth scaffold (unchanged)
-*/
-const qs = (obj) => Object.keys(obj).map(k => `${encodeURIComponent(k)}=${encodeURIComponent(obj[k])}`).join('&');
-
-app.get('/api/auth/google', (req, res) => {
-    const { GOOGLE_CLIENT_ID, FRONTEND_URL } = process.env;
-    if (!GOOGLE_CLIENT_ID) return res.status(501).json({ message: 'Google auth not configured on server' });
-    const redirectUri = `https://accounts.google.com/o/oauth2/v2/auth?${qs({
-        client_id: GOOGLE_CLIENT_ID,
-        redirect_uri: `${process.env.FRONTEND_URL || FRONTEND_URL}/api/auth/google/callback`,
-        response_type: 'code',
-        scope: 'openid email profile',
-        access_type: 'offline',
-        prompt: 'select_account'
-    })}`;
-    res.redirect(redirectUri);
-});
-
-app.get('/api/auth/google/callback', async (req, res) => {
-    const { code } = req.query;
-    const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } = process.env;
-    if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) return res.status(501).send('Google OAuth not configured');
-    try {
-        const tokenRes = await axios.post('https://oauth2.googleapis.com/token', qs({
-            code,
-            client_id: GOOGLE_CLIENT_ID,
-            client_secret: GOOGLE_CLIENT_SECRET,
-            redirect_uri: `http://localhost:4000/api/auth/google/callback`,
-            grant_type: 'authorization_code'
-        }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-        const id_token = tokenRes.data.id_token;
-        const base64Url = id_token.split('.')[1];
-        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-        const decoded = JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
-        const email = decoded.email;
-        const name = decoded.name || decoded.email.split('@')[0];
-        let user = await User.findOne({ email });
-        if (!user) {
-            const dummyPass = crypto.randomBytes(12).toString('hex');
-            const passwordHash = await bcrypt.hash(dummyPass, 10);
-            user = await User.create({ email, name, passwordHash });
-        }
-        const token = signToken({ id: user._id });
-        const cookieOptions = { httpOnly: true, sameSite: 'lax', secure: NODE_ENV === 'production' };
-        res.cookie(COOKIE_NAME, token, cookieOptions);
-        res.redirect(process.env.FRONTEND_URL || 'http://localhost:3000');
-    } catch (err) {
-        console.error('Google callback failed', err.response?.data || err.message || err);
-        res.status(500).send('Google auth failed');
-    }
-});
-
 // profile update (handles startNewCycle)
+// Simplified: removed distributionByMonth handling; on startNewCycle we set top-level distribution for the given startMonth
 app.put('/api/profile', authMiddleware, async (req, res) => {
     try {
         let {
             salary, salaryFrequency, splits, preset, automate, startMonth,
-            startNewCycle, extraIncome // remove activeTracking from destructure
+            startNewCycle, extraIncome
         } = req.body;
 
-        // Server decides activeTracking; do not trust client to send it
         const willActivateTracking = Boolean(automate) && Boolean(startNewCycle);
-
         const newSplits = splits ?? req.user.splits ?? {};
 
         // validate splits sum
         const sum = Object.values(newSplits || {}).reduce((a, b) => a + Number(b || 0), 0);
         if (sum !== 100) return res.status(400).json({ message: 'Splits must sum to 100' });
 
-        // validate startMonth if provided
         if (typeof startMonth !== 'undefined' && startMonth) {
             if (!validateMonthFormat(startMonth)) return res.status(400).json({ message: 'startMonth must be in YYYY-MM format' });
         }
@@ -335,7 +276,6 @@ app.put('/api/profile', authMiddleware, async (req, res) => {
 
             const distributed = computeDistribution(Number(salary || 0), newSplits, Number(extraIncome || 0));
 
-            // Build update: note we set activeTracking according to server rule
             const update = {
                 $push: { salaryHistory: historyEntry },
                 $set: {
@@ -345,20 +285,13 @@ app.put('/api/profile', authMiddleware, async (req, res) => {
                     splits: newSplits,
                     preset: preset || req.user.preset,
                     automate: typeof automate !== 'undefined' ? Boolean(automate) : req.user.automate,
-                    // server-determined:
                     activeTracking: willActivateTracking,
-                    onboardComplete: true
+                    onboardComplete: true,
+                    distribution: distributed // set top-level distribution for the active month
                 },
             };
-            update.$set[`distributionByMonth.${startMonth}`] = distributed;
-
-            // if startMonth is current month, also set top-level distribution
-            if (startMonth === (new Date().toISOString().slice(0, 7))) {
-                update.$set.distribution = distributed;
-            }
 
             await User.findByIdAndUpdate(req.user._id, update, { new: true });
-
             const updated = await User.findById(req.user._id).lean();
             return res.json({
                 salary: updated.salary,
@@ -369,13 +302,12 @@ app.put('/api/profile', authMiddleware, async (req, res) => {
                 subscribed: Boolean(updated.subscribed),
                 salaryHistory: updated.salaryHistory || [],
                 salaryLockedMonth: updated.salaryLockedMonth || '',
-                // activeTracking now comes from DB
                 activeTracking: Boolean(updated.activeTracking),
                 onboardComplete: Boolean(updated.onboardComplete)
             });
         }
 
-        // Normal update (no new cycle) - do NOT accept client activeTracking
+        // Normal update (no new cycle)
         const updateObj = {
             salary: Number(salary || req.user.salary || 0),
             salaryFrequency,
@@ -384,23 +316,22 @@ app.put('/api/profile', authMiddleware, async (req, res) => {
             onboardComplete: true
         };
         if (typeof automate !== 'undefined') updateObj.automate = Boolean(automate);
-        // Note: server does not accept activeTracking from client for normal updates
         if (typeof startMonth !== 'undefined') updateObj.startMonth = startMonth || '';
 
         await User.findByIdAndUpdate(req.user._id, updateObj, { new: true });
-        const updated = await User.findById(req.user._id).lean();
+        const updatedUser = await User.findById(req.user._id).lean();
 
         res.json({
-            salary: updated.salary,
-            splits: updated.splits,
-            preset: updated.preset,
-            automate: Boolean(updated.automate),
-            startMonth: updated.startMonth || '',
-            subscribed: Boolean(updated.subscribed),
-            salaryHistory: updated.salaryHistory || [],
-            salaryLockedMonth: updated.salaryLockedMonth || '',
-            activeTracking: Boolean(updated.activeTracking),
-            onboardComplete: Boolean(updated.onboardComplete)
+            salary: updatedUser.salary,
+            splits: updatedUser.splits,
+            preset: updatedUser.preset,
+            automate: Boolean(updatedUser.automate),
+            startMonth: updatedUser.startMonth || '',
+            subscribed: Boolean(updatedUser.subscribed),
+            salaryHistory: updatedUser.salaryHistory || [],
+            salaryLockedMonth: updatedUser.salaryLockedMonth || '',
+            activeTracking: Boolean(updatedUser.activeTracking),
+            onboardComplete: Boolean(updatedUser.onboardComplete)
         });
 
     } catch (err) {
@@ -409,7 +340,8 @@ app.put('/api/profile', authMiddleware, async (req, res) => {
     }
 });
 
-// simulate / distribute with month validation and persistence
+// simulate / distribute (simplified)
+// Note: no distributionByMonth; persisting top-level distribution if month is current
 app.post('/api/simulate-distribute', authMiddleware, async (req, res) => {
     try {
         const { salary: inputSalary, splits: inputSplits, preset: splitPreset, month, extraIncome } = req.body;
@@ -417,35 +349,22 @@ app.post('/api/simulate-distribute', authMiddleware, async (req, res) => {
         const splits = inputSplits || req.user.splits;
         const preset = splitPreset || req.user.preset;
 
-        console.log(req.body);
-
-        // validate splits sum
         const sum = Object.values(splits).reduce((a, b) => a + Number(b || 0), 0);
         if (sum !== 100) return res.status(400).json({ message: 'Splits must sum to 100' });
 
-        // month validation
         const targetMonth = month || req.user.startMonth || new Date().toISOString().slice(0, 7);
         if (!validateMonthFormat(targetMonth)) return res.status(400).json({ message: 'month must be in YYYY-MM format' });
 
-        // If month is locked and distribution exists, do not overwrite
         if (req.user.salaryLockedMonth && req.user.salaryLockedMonth === targetMonth) {
-            const existing = (req.user.distributionByMonth && (req.user.distributionByMonth.get ? req.user.distributionByMonth.get(targetMonth) : req.user.distributionByMonth[targetMonth]));
-            if (existing) {
-                return res.status(409).json({ message: `Salary distribution for ${targetMonth} is locked and cannot be overwritten` });
-            }
+            // since we don't keep distributionByMonth, check top-level distribution lock only
+            return res.status(409).json({ message: `Salary distribution for ${targetMonth} is locked and cannot be overwritten` });
         }
 
-        // compute distribution with extraIncome considered
         const totalSalaryForMonth = salary + Number(extraIncome || 0);
-        const distributed = computeDistribution(totalSalaryForMonth, splits, 0); // computeDistribution expects extraIncome separately; we already added here
+        const distributed = computeDistribution(totalSalaryForMonth, splits, 0);
 
-        // persist
-        const update = { $set: {} };
-        update.$set[`distributionByMonth.${targetMonth}`] = distributed;
-        // if distributing for current month, set top-level distribution as convenience
-        if (targetMonth === (new Date().toISOString().slice(0, 7))) {
-            update.$set.distribution = distributed;
-        }
+        const update = { $set: { distribution: distributed } };
+        // convenience: if month is current month, set distribution (we already do)
         await User.findByIdAndUpdate(req.user._id, update, { new: true });
 
         res.json({ salary: totalSalaryForMonth, distribution: distributed, month: targetMonth, preset });
@@ -455,33 +374,85 @@ app.post('/api/simulate-distribute', authMiddleware, async (req, res) => {
     }
 });
 
-// transactions (unchanged)
-app.post('/api/transactions', authMiddleware, async (req, res) => {
+// GET /api/transactions -> return latest 5 for current user (newest first)
+app.get("/api/transactions", authMiddleware, async (req, res) => {
     try {
-        const { date, amount, bucket, category, notes } = req.body;
-        const txn = { transactionId: new mongoose.Types.ObjectId().toString(), date: date || new Date().toISOString().slice(0, 10), amount, bucket, category, notes };
-        await User.findByIdAndUpdate(req.user._id, { $push: { transactions: txn } }, { new: true, upsert: true });
-        res.json({ ok: true, txn });
+        const userId = req.user.id;
+        // parse limit; 0 or missing => return all
+        const limitParam = parseInt(req.query.limit, 10);
+        const limit = Number.isNaN(limitParam) ? 5 : limitParam; // default to 5 for backward compatibility
+
+        // if limit === 0, return all transactions for this user
+        const query = { userId };
+        let txns;
+        if (limit === 0) {
+            txns = await Transaction.find(query).sort({ createdAt: -1 }).lean();
+        } else {
+            txns = await Transaction.find(query).sort({ createdAt: -1 }).limit(limit).lean();
+        }
+
+        return res.json({ transactions: txns });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: 'Server error' });
+        console.error("GET /api/transactions failed:", err);
+        return res.status(500).json({ error: "Failed to fetch transactions" });
     }
 });
 
-app.get('/api/transactions', authMiddleware, async (req, res) => {
+// POST /api/transactions -> add txn, deduct from distribution (if exists) and return created txn
+app.post('/api/transactions', authMiddleware, async (req, res) => {
     try {
-        const qMonth = req.query.month;
-        const user = await User.findById(req.user._id).lean();
-        const txns = user.transactions || [];
-        let filtered = txns;
-        if (qMonth) {
-            filtered = txns.filter(t => (t.date || '').startsWith(qMonth));
+        const user = req.user;
+        if (!user) return res.status(401).json({ error: 'Unauthorized' });
+
+        const { bucket, category, amount } = req.body;
+        const amt = Number(amount || 0);
+        if (!bucket || !amt || amt <= 0) return res.status(400).json({ error: 'Invalid payload' });
+
+        const txn = await Transaction.create({ userId: user._id, bucket, category, amount: amt });
+
+        // Update user's distribution if present (deduct amount from that bucket)
+        const u = await User.findById(user._id);
+        if (u) {
+            const dist = (u.distribution && typeof u.distribution === 'object') ? u.distribution : null;
+            if (dist && dist[bucket] !== undefined) {
+                const prev = Number(dist[bucket] || 0);
+                const next = Math.max(0, prev - amt);
+                u.distribution = Object.assign({}, dist, { [bucket]: next });
+                await u.save();
+            }
         }
-        res.json({ transactions: filtered });
+
+        const txns = await Transaction.find({ userId: user._id }).sort({ createdAt: -1 }).limit(5).lean();
+        return res.json({ transaction: txn, transactions: txns });
     } catch (err) {
         console.error(err);
-        res.status(500).json({ message: 'Server error' });
+        return res.status(500).json({ error: 'Server error' });
     }
 });
+
+// DELETE /api/transactions/:id
+app.delete("/api/transactions/:id", authMiddleware, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id; // from JWT via authMiddleware
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ error: "Invalid transaction ID" });
+        }
+
+        const txn = await Transaction.findOne({ _id: id, userId });
+        if (!txn) {
+            return res.status(404).json({ error: "Transaction not found or unauthorized" });
+        }
+
+        await txn.deleteOne();
+
+        return res.status(200).json({ message: "Transaction deleted successfully" });
+    } catch (err) {
+        console.error("DELETE /api/transactions/:id failed:", err);
+        return res.status(500).json({ error: "Server error while deleting transaction" });
+    }
+});
+
 
 app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));
