@@ -136,22 +136,22 @@ export default function Header() {
 
   return (
     <header className="sticky top-0 z-50 bg-white shadow-sm border-b border-slate-200">
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+      <div className="mx-auto px-4 sm:px-6 lg:px-8">
         {/* top row */}
         <div className="flex h-16 items-center justify-between">
           {/* brand */}
           <div className="flex items-center gap-3 min-w-0">
             <Link
-              href="/"
+              href={onboardComplete ? "/dashboard" : "/onboarding"}
               className="inline-flex items-center gap-3"
               aria-label="SPEWN Home"
             >
               {/* logo 40x20 */}
-              <div className="relative w-[40px] h-[20px]">
+              <div className="">
                 <Image
                   src="/spewn-logo-main.png"
                   alt="SPEWN"
-                  width={40}
+                  width={100}
                   height={20}
                   priority
                 />
