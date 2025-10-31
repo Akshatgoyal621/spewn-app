@@ -1,6 +1,6 @@
 export default function Footer() {
   return (
-    <footer className="mt-16 border-t border-slate-200 bg-white/60 backdrop-blur-sm py-8 text-center text-sm text-slate-600">
+    <footer className="border-t border-slate-200 bg-white/60 backdrop-blur-sm py-8 text-center text-sm text-slate-600">
       <div className="mb-3 text-base font-medium tracking-wide text-[#00bba7]">
         SPEWN • Salary sorted, mind at ease.
       </div>
