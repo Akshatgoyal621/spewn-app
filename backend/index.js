@@ -1,4 +1,4 @@
-// index.js (patched)
+// index.js (updated: cookie + bearer token support, debug route)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -51,7 +51,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions)); // explicit preflight handling
 
-// DB connect
+// DB connect (production expects MONGODB_URI)
 async function connectDB() {
     try {
         if (MONGODB_URI) {
@@ -62,12 +62,8 @@ async function connectDB() {
             });
             console.log('✅ MongoDB connected via MONGODB_URI');
         } else {
-            // In-memory fallback for dev convenience
-            await mongoose.connect(MONGODB_URI, {
-                useNewUrlParser: true,
-                useUnifiedTopology: true
-            });
-            console.log('MongoMemoryServer started (in-memory MongoDB)');
+            console.error('❌ No MONGODB_URI provided. Set it in environment variables.');
+            process.exit(1);
         }
     } catch (err) {
         console.error('Mongo connection error', err);
@@ -82,16 +78,46 @@ function signToken(payload) {
     return jwt.sign(payload, JWT_SECRET, { expiresIn: '70d' });
 }
 
+// authMiddleware now accepts either cookie or Bearer token
 async function authMiddleware(req, res, next) {
     try {
-        const token = req.cookies[COOKIE_NAME];
-        if (!token) return res.status(401).json({ message: 'Unauthorized' });
-        const decoded = jwt.verify(token, JWT_SECRET);
-        const user = await User.findById(decoded.id);
-        if (!user) return res.status(401).json({ message: 'Unauthorized' });
-        req.user = user;
-        next();
+        // 1) check cookie first
+        const cookieToken = req.cookies[COOKIE_NAME];
+        if (cookieToken) {
+            try {
+                const decoded = jwt.verify(cookieToken, JWT_SECRET);
+                const user = await User.findById(decoded.id);
+                if (!user) return res.status(401).json({ message: 'Unauthorized' });
+                req.user = user;
+                req.authMethod = 'cookie';
+                return next();
+            } catch (err) {
+                // cookie present but invalid/expired — continue to check bearer
+                console.warn('Cookie token invalid:', err.message);
+            }
+        }
+
+        // 2) fallback: Authorization: Bearer <token>
+        const authHeader = (req.headers.authorization || '');
+        if (authHeader.startsWith('Bearer ')) {
+            const bearerToken = authHeader.slice(7);
+            try {
+                const decoded = jwt.verify(bearerToken, JWT_SECRET);
+                const user = await User.findById(decoded.id);
+                if (!user) return res.status(401).json({ message: 'Unauthorized' });
+                req.user = user;
+                req.authMethod = 'bearer';
+                return next();
+            } catch (err) {
+                console.warn('Bearer token invalid:', err.message);
+                return res.status(401).json({ message: 'Unauthorized' });
+            }
+        }
+
+        // no token found
+        return res.status(401).json({ message: 'Unauthorized' });
     } catch (err) {
+        console.error('authMiddleware error:', err);
         return res.status(401).json({ message: 'Unauthorized' });
     }
 }
@@ -154,6 +180,16 @@ function buildCookieOptions({ rememberMe = false } = {}) {
 // health
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
+// debug route: inspect headers & cookies (useful to test mobile)
+app.get('/debug/echo-headers', (req, res) => {
+    res.json({
+        headers: req.headers,
+        cookies: req.cookies,
+        origin: req.headers.origin || null,
+        authHeader: req.headers.authorization || null
+    });
+});
+
 // auth: register
 app.post('/api/auth/register', async (req, res) => {
     try {
@@ -166,7 +202,8 @@ app.post('/api/auth/register', async (req, res) => {
         const token = signToken({ id: user._id });
         const cookieOptions = buildCookieOptions({});
         res.cookie(COOKIE_NAME, token, cookieOptions);
-        res.json({ ok: true, user: { id: user._id, email: user.email, token: token } });
+        // respond with token as well (useful for mobile fallback)
+        res.json({ ok: true, user: { id: user._id, email: user.email, token } });
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Server error' });
@@ -186,7 +223,9 @@ app.post('/api/auth/login', async (req, res) => {
         const token = signToken({ id: user._id });
         const cookieOptions = buildCookieOptions({ rememberMe });
         res.cookie(COOKIE_NAME, token, cookieOptions);
-        res.json({ ok: true, user: { id: user._id, email: user.email, token: token } });
+
+        // return token in JSON too — useful for mobile clients that can't rely on cookies
+        res.json({ ok: true, user: { id: user._id, email: user.email, token } });
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Server error' });
