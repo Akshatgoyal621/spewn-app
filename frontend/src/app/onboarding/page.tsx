@@ -6,6 +6,9 @@ import {useAuth} from "../../lib/auth-client";
 import SpewnSection from "@/components/SpewnSection";
 import type {Splits} from "../../app/types/splits";
 
+/* Preset type */
+type Preset = "balanced" | "conservative" | "aggressive";
+
 /* Config presets */
 const CONFIG = {
   PRESETS: {
@@ -38,6 +41,59 @@ function sumSplits(s: Splits) {
   return Object.values(s).reduce((a, b) => a + Number(b || 0), 0);
 }
 
+/* --- Runtime guards & normalizers --- */
+const PRESET_VALUES: Preset[] = ["balanced", "conservative", "aggressive"];
+
+function isPreset(x: any): x is Preset {
+  return typeof x === "string" && PRESET_VALUES.includes(x as Preset);
+}
+
+function isSplits(x: any): x is Splits {
+  if (!x || typeof x !== "object") return false;
+  return (
+    typeof x.savings === "number" &&
+    typeof x.parents_preserve === "number" &&
+    typeof x.extras_buffer === "number" &&
+    typeof x.wants === "number" &&
+    typeof x.needs === "number"
+  );
+}
+
+/**
+ * Attempts to coerce/normalize a loose object into a Splits.
+ * Falls back to default preset if normalization fails.
+ */
+function normalizeSplits(x: any): Splits {
+  if (isSplits(x)) return x;
+
+  if (x && typeof x === "object") {
+    // Accept either snake_case or camelCase keys from backend
+    const maybe: Partial<Splits> = {
+      savings: typeof x.savings === "number" ? x.savings : undefined,
+      parents_preserve:
+        typeof x.parents_preserve === "number"
+          ? x.parents_preserve
+          : typeof x.parentsPreserve === "number"
+          ? x.parentsPreserve
+          : undefined,
+      extras_buffer:
+        typeof x.extras_buffer === "number"
+          ? x.extras_buffer
+          : typeof x.extrasBuffer === "number"
+          ? x.extrasBuffer
+          : undefined,
+      wants: typeof x.wants === "number" ? x.wants : undefined,
+      needs: typeof x.needs === "number" ? x.needs : undefined,
+    };
+
+    const allPresent = Object.values(maybe).every((v) => typeof v === "number");
+    if (allPresent) return maybe as Splits;
+  }
+
+  // Fallback -> default preset splits
+  return CONFIG.PRESETS[CONFIG.DEFAULT_PRESET];
+}
+
 /* Onboarding page */
 export default function OnboardingPage() {
   return <OnboardingInner />;
@@ -48,12 +104,16 @@ function OnboardingInner() {
   const router = useRouter();
 
   // default to server value if present, otherwise blank/default preset
-  const [salary, setSalary] = useState<number | string>(user?.salary ?? "");
-  const [preset, setPreset] = useState<
-    "balanced" | "conservative" | "aggressive"
-  >((user?.preset as any) ?? CONFIG.DEFAULT_PRESET);
-  const [splits, setSplits] = useState<Splits>(
-    user?.splits ?? CONFIG.PRESETS[CONFIG.DEFAULT_PRESET]
+  const [salary, setSalary] = useState<number | string>(
+    () => user?.salary ?? ""
+  );
+
+  const [preset, setPreset] = useState<Preset>(() =>
+    isPreset(user?.preset) ? (user!.preset as Preset) : CONFIG.DEFAULT_PRESET
+  );
+
+  const [splits, setSplits] = useState<Splits>(() =>
+    normalizeSplits(user?.splits ?? CONFIG.PRESETS[CONFIG.DEFAULT_PRESET])
   );
 
   // AUTOMATION & NEW CYCLE: disabled for now
@@ -62,7 +122,9 @@ function OnboardingInner() {
   const [activeTracking] = useState<boolean>(false);
 
   // optional fields kept for future use
-  const [startMonth, setStartMonth] = useState<string>(user?.startMonth ?? "");
+  const [startMonth, setStartMonth] = useState<string>(
+    () => user?.startMonth ?? ""
+  );
   const [extraIncome, setExtraIncome] = useState<number | string>("");
 
   const [loading, setLoading] = useState(false);
@@ -74,14 +136,22 @@ function OnboardingInner() {
   useEffect(() => {
     if (!user) return;
     setSalary(user.salary ?? "");
-    setPreset((user.preset as any) ?? CONFIG.DEFAULT_PRESET);
-    setSplits(user.splits ?? CONFIG.PRESETS[CONFIG.DEFAULT_PRESET]);
+    setPreset(
+      isPreset(user.preset) ? (user.preset as Preset) : CONFIG.DEFAULT_PRESET
+    );
+    setSplits(
+      normalizeSplits(user.splits ?? CONFIG.PRESETS[CONFIG.DEFAULT_PRESET])
+    );
     // automate & activeTracking intentionally left unchanged (disabled)
     setStartMonth(user.startMonth ?? "");
   }, [user]);
 
   const updateSplit = (key: keyof Splits, value: number) =>
-    setSplits((p) => ({...p, [key]: Number.isFinite(value) ? value : 0}));
+    setSplits((p) => {
+      const next: Splits = {...p, [key]: Number.isFinite(value) ? value : 0};
+      return next;
+    });
+
   const splitsAreValid = () => sumSplits(splits) === 100;
 
   const saveAndDistribute = useCallback(async () => {

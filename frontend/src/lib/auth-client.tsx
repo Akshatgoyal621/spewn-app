@@ -1,14 +1,28 @@
 // lib/auth-client.tsx
 "use client";
 import React, { createContext, useContext, useEffect, useState } from "react";
+type SplitMap = Record<string, number>;
 
 type UserShape = {
   id: string;
-  email: string;
+  email?: string;
   name?: string;
   salary?: number;
-  splits?: Record<string, number>;
+  splits?: SplitMap;
   distribution?: Record<string, number>;
+  preset?: string;
+  currency?: string;
+  subscribed?: boolean;
+  automate?: boolean;
+  activeTracking?: boolean;
+  salaryHistory?: Array<{
+    salary: number;
+    startMonth?: string;
+    extraIncome?: number;
+    splits?: SplitMap;
+  }>;
+  salaryLockedMonth?: string;
+  startMonth?: string;
 };
 
 type AuthContextShape = {

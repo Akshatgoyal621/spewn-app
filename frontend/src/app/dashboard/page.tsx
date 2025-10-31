@@ -14,7 +14,7 @@ import {
   sum as _sum,
   round as _round,
 } from "lodash";
-import { useAuth } from "@/lib/auth-client";
+import {useAuth} from "@/lib/auth-client";
 
 /*
   DashboardInner (refactored + fixes)
@@ -22,31 +22,8 @@ import { useAuth } from "@/lib/auth-client";
   - improvements: memoized month filtering, robust date parsing, better defaults
 */
 
-type SplitMap = Record<string, number>;
-
-type UserProfile = {
-  id: string;
-  email?: string;
-  name?: string;
-  salary?: number;
-  splits?: SplitMap;
-  distribution?: Record<string, number>;
-  preset?: string;
-  currency?: string;
-  subscribed?: boolean;
-  automate?: boolean;
-  activeTracking?: boolean;
-  salaryHistory?: Array<{
-    salary: number;
-    startMonth?: string;
-    extraIncome?: number;
-    splits?: SplitMap;
-  }>;
-  salaryLockedMonth?: string;
-  startMonth?: string;
-};
-
 type ChartDatum = {key: string; value: number};
+type SplitMap = Record<string, number>;
 
 type Txn = {
   _id?: string;
