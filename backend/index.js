@@ -1,4 +1,4 @@
-// index.js
+// index.js (patched)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -6,7 +6,6 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
-const { MongoMemoryServer } = require('mongodb-memory-server');
 const crypto = require('crypto');
 
 const User = require('./models/User');
@@ -19,29 +18,55 @@ app.use(cookieParser());
 const {
     PORT = 4000,
     MONGODB_URI,
-    JWT_SECRET = 'change_this_jwt_secret',
+    JWT_SECRET,
     COOKIE_NAME = 'spewn_token',
-    FRONTEND_URL = 'http://localhost:3000',
+    FRONTEND_URL = 'http://localhost:3000', // set to https://spewn-app.vercel.app in Render env
+    DEV_FRONTEND_URL = 'http://localhost:3000',
     NODE_ENV = 'development'
 } = process.env;
 
-app.use(cors({
-    origin: FRONTEND_URL,
+// Allowed origins: use the destructured vars (not process.env.* inside the array)
+const allowedOrigins = [FRONTEND_URL, DEV_FRONTEND_URL].filter(Boolean);
+
+// dynamic-origin CORS options
+const corsOptions = {
+    origin: function (origin, callback) {
+        // allow server-to-server requests or tools like curl that have no origin
+        if (!origin) return callback(null, true);
+
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            return callback(null, true);
+        } else {
+            console.warn('CORS blocked origin:', origin);
+            return callback(new Error('CORS: Origin not allowed'), false);
+        }
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    preflightContinue: false
+};
 
+// Apply CORS before routes
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // explicit preflight handling
+
+// DB connect
 async function connectDB() {
     try {
         if (MONGODB_URI) {
-            await mongoose.connect(MONGODB_URI);
-            console.log('MongoDB connected via MONGODB_URI');
+            console.log('Connecting to MongoDB...');
+            await mongoose.connect(MONGODB_URI, {
+                useNewUrlParser: true,
+                useUnifiedTopology: true
+            });
+            console.log('✅ MongoDB connected via MONGODB_URI');
         } else {
             // In-memory fallback for dev convenience
-            const mongod = await MongoMemoryServer.create();
-            const uri = mongod.getUri();
-            await mongoose.connect(uri);
+            await mongoose.connect(MONGODB_URI, {
+                useNewUrlParser: true,
+                useUnifiedTopology: true
+            });
             console.log('MongoMemoryServer started (in-memory MongoDB)');
         }
     } catch (err) {
@@ -54,7 +79,7 @@ connectDB();
 
 // helpers
 function signToken(payload) {
-    return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+    return jwt.sign(payload, JWT_SECRET, { expiresIn: '70d' });
 }
 
 async function authMiddleware(req, res, next) {
@@ -62,7 +87,6 @@ async function authMiddleware(req, res, next) {
         const token = req.cookies[COOKIE_NAME];
         if (!token) return res.status(401).json({ message: 'Unauthorized' });
         const decoded = jwt.verify(token, JWT_SECRET);
-        // load full user document (not lean) so that later updates can be done if needed
         const user = await User.findById(decoded.id);
         if (!user) return res.status(401).json({ message: 'Unauthorized' });
         req.user = user;
@@ -89,17 +113,14 @@ function computeDistribution(salary, splits, extraIncome = 0) {
     return out;
 }
 
-// Helper: ensure user's automation for the month (runs once per month when needed)
-// Simplified: no distributionByMonth structure, only update top-level distribution and lastAutomatedMonth
 async function ensureMonthlyAutomation(userId) {
     const user = await User.findById(userId);
     if (!user) return;
-    if (!user.automate) return; // nothing to do
+    if (!user.automate) return;
 
     const currentMonth = new Date().toISOString().slice(0, 7);
-    if (user.lastAutomatedMonth === currentMonth) return; // already ran
+    if (user.lastAutomatedMonth === currentMonth) return;
 
-    // compute distribution for current month from salary + splits
     const splits = user.splits || {};
     const salary = Number(user.salary || 0);
     const distributed = computeDistribution(salary, splits, 0);
@@ -107,6 +128,27 @@ async function ensureMonthlyAutomation(userId) {
     user.distribution = distributed;
     user.lastAutomatedMonth = currentMonth;
     await user.save();
+}
+
+// Cookie options helper
+function buildCookieOptions({ rememberMe = false } = {}) {
+    if (NODE_ENV === 'production') {
+        // Production: allow cross-site cookies (frontend and backend on different domains)
+        return {
+            httpOnly: true,
+            sameSite: 'none',   // required for cross-site cookies
+            secure: true,       // must be true on HTTPS
+            ...(rememberMe ? { maxAge: 1000 * 60 * 60 * 24 * 30 } : {})
+        };
+    } else {
+        // Local dev: sameSite none + secure true will break cookies in many local setups
+        return {
+            httpOnly: true,
+            sameSite: 'lax',
+            secure: false,
+            ...(rememberMe ? { maxAge: 1000 * 60 * 60 * 24 * 30 } : {})
+        };
+    }
 }
 
 // health
@@ -122,9 +164,9 @@ app.post('/api/auth/register', async (req, res) => {
         const passwordHash = await bcrypt.hash(password, 10);
         const user = await User.create({ email, name: name || '', passwordHash });
         const token = signToken({ id: user._id });
-        const cookieOptions = { httpOnly: true, sameSite: 'lax', secure: NODE_ENV === 'production' };
+        const cookieOptions = buildCookieOptions({});
         res.cookie(COOKIE_NAME, token, cookieOptions);
-        res.json({ ok: true, user: { id: user._id, email: user.email } });
+        res.json({ ok: true, user: { id: user._id, email: user.email, token: token } });
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Server error' });
@@ -142,14 +184,9 @@ app.post('/api/auth/login', async (req, res) => {
         if (!ok) return res.status(400).json({ message: 'Invalid credentials' });
 
         const token = signToken({ id: user._id });
-        const cookieOptions = {
-            httpOnly: true,
-            sameSite: 'lax',
-            secure: NODE_ENV === 'production',
-            ...(rememberMe ? { maxAge: 1000 * 60 * 60 * 24 * 30 } : {})
-        };
+        const cookieOptions = buildCookieOptions({ rememberMe });
         res.cookie(COOKIE_NAME, token, cookieOptions);
-        res.json({ ok: true, user: { id: user._id, email: user.email } });
+        res.json({ ok: true, user: { id: user._id, email: user.email, token: token } });
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Server error' });
@@ -157,12 +194,11 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
-    res.clearCookie(COOKIE_NAME);
+    res.clearCookie(COOKIE_NAME, buildCookieOptions());
     res.json({ ok: true });
 });
 
 // get current user (auth + automation check)
-// this route returns only fields frontend needs; distribution stays top-level only
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
     try {
         try {
@@ -204,7 +240,7 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
     }
 });
 
-// forgot/reset password (unchanged)
+// forgot/reset password
 app.post('/api/auth/forgot-password', async (req, res) => {
     try {
         const { email } = req.body;
@@ -238,7 +274,6 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 // profile update (handles startNewCycle)
-// Simplified: removed distributionByMonth handling; on startNewCycle we set top-level distribution for the given startMonth
 app.put('/api/profile', authMiddleware, async (req, res) => {
     try {
         let {
@@ -287,7 +322,7 @@ app.put('/api/profile', authMiddleware, async (req, res) => {
                     automate: typeof automate !== 'undefined' ? Boolean(automate) : req.user.automate,
                     activeTracking: willActivateTracking,
                     onboardComplete: true,
-                    distribution: distributed // set top-level distribution for the active month
+                    distribution: distributed
                 },
             };
 
@@ -340,8 +375,7 @@ app.put('/api/profile', authMiddleware, async (req, res) => {
     }
 });
 
-// simulate / distribute (simplified)
-// Note: no distributionByMonth; persisting top-level distribution if month is current
+// simulate / distribute
 app.post('/api/simulate-distribute', authMiddleware, async (req, res) => {
     try {
         const { salary: inputSalary, splits: inputSplits, preset: splitPreset, month, extraIncome } = req.body;
@@ -356,7 +390,6 @@ app.post('/api/simulate-distribute', authMiddleware, async (req, res) => {
         if (!validateMonthFormat(targetMonth)) return res.status(400).json({ message: 'month must be in YYYY-MM format' });
 
         if (req.user.salaryLockedMonth && req.user.salaryLockedMonth === targetMonth) {
-            // since we don't keep distributionByMonth, check top-level distribution lock only
             return res.status(409).json({ message: `Salary distribution for ${targetMonth} is locked and cannot be overwritten` });
         }
 
@@ -364,7 +397,6 @@ app.post('/api/simulate-distribute', authMiddleware, async (req, res) => {
         const distributed = computeDistribution(totalSalaryForMonth, splits, 0);
 
         const update = { $set: { distribution: distributed } };
-        // convenience: if month is current month, set distribution (we already do)
         await User.findByIdAndUpdate(req.user._id, update, { new: true });
 
         res.json({ salary: totalSalaryForMonth, distribution: distributed, month: targetMonth, preset });
@@ -374,15 +406,13 @@ app.post('/api/simulate-distribute', authMiddleware, async (req, res) => {
     }
 });
 
-// GET /api/transactions -> return latest 5 for current user (newest first)
+// GET /api/transactions
 app.get("/api/transactions", authMiddleware, async (req, res) => {
     try {
         const userId = req.user.id;
-        // parse limit; 0 or missing => return all
         const limitParam = parseInt(req.query.limit, 10);
-        const limit = Number.isNaN(limitParam) ? 5 : limitParam; // default to 5 for backward compatibility
+        const limit = Number.isNaN(limitParam) ? 5 : limitParam;
 
-        // if limit === 0, return all transactions for this user
         const query = { userId };
         let txns;
         if (limit === 0) {
@@ -398,7 +428,7 @@ app.get("/api/transactions", authMiddleware, async (req, res) => {
     }
 });
 
-// POST /api/transactions -> add txn, deduct from distribution (if exists) and return created txn
+// POST /api/transactions
 app.post('/api/transactions', authMiddleware, async (req, res) => {
     try {
         const user = req.user;
@@ -410,7 +440,6 @@ app.post('/api/transactions', authMiddleware, async (req, res) => {
 
         const txn = await Transaction.create({ userId: user._id, bucket, category, amount: amt });
 
-        // Update user's distribution if present (deduct amount from that bucket)
         const u = await User.findById(user._id);
         if (u) {
             const dist = (u.distribution && typeof u.distribution === 'object') ? u.distribution : null;
@@ -434,7 +463,7 @@ app.post('/api/transactions', authMiddleware, async (req, res) => {
 app.delete("/api/transactions/:id", authMiddleware, async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user.id; // from JWT via authMiddleware
+        const userId = req.user.id;
 
         if (!mongoose.Types.ObjectId.isValid(id)) {
             return res.status(400).json({ error: "Invalid transaction ID" });
@@ -454,23 +483,22 @@ app.delete("/api/transactions/:id", authMiddleware, async (req, res) => {
     }
 });
 
-//Auth password change
+// change password
 app.post("/api/auth/change-password", authMiddleware, async (req, res) => {
-  try {
-    const { currentPassword, newPassword } = req.body;
-    if (!currentPassword || !newPassword) return res.status(400).json({ message: "currentPassword and newPassword required" });
-    const user = await User.findById(req.user._id);
-    const ok = await bcrypt.compare(currentPassword, user.passwordHash);
-    if (!ok) return res.status(400).json({ message: "Current password is incorrect" });
-    const hash = await bcrypt.hash(newPassword, 10);
-    user.passwordHash = hash;
-    await user.save();
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("change-password error", err);
-    res.status(500).json({ message: "Server error" });
-  }
+    try {
+        const { currentPassword, newPassword } = req.body;
+        if (!currentPassword || !newPassword) return res.status(400).json({ message: "currentPassword and newPassword required" });
+        const user = await User.findById(req.user._id);
+        const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+        if (!ok) return res.status(400).json({ message: "Current password is incorrect" });
+        const hash = await bcrypt.hash(newPassword, 10);
+        user.passwordHash = hash;
+        await user.save();
+        res.json({ ok: true });
+    } catch (err) {
+        console.error("change-password error", err);
+        res.status(500).json({ message: "Server error" });
+    }
 });
 
-
-app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Backend running on port ${PORT} (NODE_ENV=${NODE_ENV})`));
