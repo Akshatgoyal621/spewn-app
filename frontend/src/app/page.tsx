@@ -1,24 +1,21 @@
 "use client";
-import {useState} from "react";
+import React, {useEffect, useState} from "react";
 import {useRouter} from "next/navigation";
-import {useAuth} from "../lib/auth-client";
+import {useAuth} from "@/lib/auth-client";
 
 /**
  * Helper: set a client-side fallback cookie for token (not httpOnly).
  * We keep it short-lived (session cookie) so it's only around while the tab is open.
  * Avoids using localStorage (per request).
  */
-function setClientTokenCookie(token: string) {
+function setClientTokenCookie(token: string | null) {
   if (!token) return;
-  // session cookie (no max-age) so it clears when the browser session ends.
-  // Use secure flag only if running on https and not on localhost.
   const isLocal =
     typeof window !== "undefined" && window.location.hostname === "localhost";
   const secure = !isLocal;
-  // path=/ to allow reuse across site; sameSite=lax to reduce cross-site risks
-  const cookie = `spewn_client_token=${token}; path=/; samesite=lax${
-    secure ? "; secure" : ""
-  }`;
+  const cookie = `spewn_client_token=${encodeURIComponent(
+    token
+  )}; path=/; samesite=lax${secure ? "; secure" : ""}`;
   try {
     document.cookie = cookie;
   } catch (e) {
@@ -32,9 +29,60 @@ function getClientTokenFromCookie(): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
-export default function Page() {
-  const {user, fetchMe} = useAuth();
+/* Simple inline spinner used in buttons */
+function ButtonSpinner({className = "h-4 w-4"}: {className?: string}) {
+  return (
+    <svg
+      className={`${className} animate-spin`}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <circle
+        cx="12"
+        cy="12"
+        r="10"
+        stroke="currentColor"
+        strokeWidth="4"
+        opacity="0.25"
+      />
+      <path
+        d="M22 12a10 10 0 00-10-10"
+        stroke="currentColor"
+        strokeWidth="4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/**
+ * Default-exported page component (explicitly typed so Next recognizes it)
+ */
+export default function LoginPage() {
+  const {user, fetchMe, loading: authLoading} = useAuth();
   const router = useRouter();
+
+  // Auto-redirect if already authenticated (auth check finished and user exists)
+  useEffect(() => {
+    if (!authLoading && user) {
+      // decide: consider profile "complete" when salary exists and splits sum to 100
+      const salaryOk = Number(user.salary) > 0;
+      const splits = (user.splits as Record<string, number>) || {};
+      const splitsSum = Object.values(splits).reduce(
+        (a: number, b: any) => a + Number(b || 0),
+        0
+      );
+      const profileComplete = salaryOk && splitsSum === 100;
+      if (profileComplete) {
+        router.replace("/dashboard");
+      } else {
+        router.replace("/onboarding");
+      }
+    }
+    // we only want to react to authLoading/user changes
+  }, [authLoading, user, router]);
 
   const [isRegister, setIsRegister] = useState(false);
   const [email, setEmail] = useState("");
@@ -54,9 +102,13 @@ export default function Page() {
 
   const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || "";
 
+  // local submitting flag (separate from authLoading)
+  const [submitting, setSubmitting] = useState(false);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr("");
+    setSubmitting(true);
     try {
       const path = isRegister ? "/api/auth/register" : "/api/auth/login";
       const body: any = {email, password};
@@ -71,19 +123,21 @@ export default function Page() {
         body: JSON.stringify(body),
       });
 
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.message || "Error");
 
       // Server returned token in JSON (useful as fallback)
       const token = json?.user?.token;
       if (token) {
         // Save fallback in a client cookie (session cookie). Avoid localStorage per request.
-        setClientTokenCookie(token);
+        try {
+          setClientTokenCookie(token);
+        } catch {}
       }
 
       // Ask auth context to refresh (it may rely on cookies)
       try {
-        await fetchMe();
+        if (typeof fetchMe === "function") await fetchMe();
       } catch (e) {
         // ignore — we'll attempt /me directly below
       }
@@ -107,7 +161,7 @@ export default function Page() {
       }
 
       if (!meRes.ok) {
-        // safe fallback routing if /me still fails
+        // safe fallback routing if /me still fails: send to onboarding as a sensible default
         router.replace("/onboarding");
         return;
       }
@@ -129,7 +183,9 @@ export default function Page() {
         router.replace("/onboarding");
       }
     } catch (e: any) {
-      setErr(e.message || "Error");
+      setErr(e?.message || "Error");
+    } finally {
+      setSubmitting(false);
     }
   }
 
@@ -143,7 +199,7 @@ export default function Page() {
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({email: fpEmail}),
       });
-      const j = await res.json();
+      const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.message || "Error");
       setFpMessage(
         "If account exists, reset instructions generated. (Check server console in dev.)"
@@ -164,7 +220,7 @@ export default function Page() {
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({token: fpToken, newPassword: fpNewPassword}),
       });
-      const j = await res.json();
+      const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.message || "Error");
       setFpMessage(
         "Password reset successful — you can now login with new password."
@@ -184,8 +240,10 @@ export default function Page() {
     window.location.href = `${BACKEND}/api/auth/google`;
   }
 
+  const disabled = authLoading || submitting;
+
   return (
-    <main className="py-12">
+    <main className="py-12" style={{marginTop:"130px"}}>
       <section className="bg-white rounded-2xl shadow p-8 max-w-md mx-auto">
         <div className="flex gap-2 mt-6">
           <button
@@ -193,16 +251,30 @@ export default function Page() {
             className={`px-4 py-2 rounded ${
               !isRegister ? "bg-teal-500 text-white" : "bg-slate-100"
             }`}
+            disabled={disabled}
           >
-            Login
+            {!authLoading && submitting && !isRegister ? (
+              <span className="inline-flex items-center gap-2">
+                <ButtonSpinner className="h-4 w-4" /> Login
+              </span>
+            ) : (
+              "Login"
+            )}
           </button>
           <button
             onClick={() => setIsRegister(true)}
             className={`px-4 py-2 rounded ${
               isRegister ? "bg-teal-500 text-white" : "bg-slate-100"
             }`}
+            disabled={disabled}
           >
-            Register
+            {!authLoading && submitting && isRegister ? (
+              <span className="inline-flex items-center gap-2">
+                <ButtonSpinner className="h-4 w-4" /> Register
+              </span>
+            ) : (
+              "Register"
+            )}
           </button>
         </div>
 
@@ -214,6 +286,7 @@ export default function Page() {
               onChange={(e) => setName(e.target.value)}
               placeholder="Full name"
               className="p-3 rounded border"
+              disabled={disabled}
             />
           )}
           <input
@@ -222,6 +295,7 @@ export default function Page() {
             onChange={(e) => setEmail(e.target.value)}
             placeholder="Email"
             className="p-3 rounded border"
+            disabled={disabled}
           />
           <div className="relative">
             <input
@@ -231,12 +305,14 @@ export default function Page() {
               placeholder="Password"
               type={showPassword ? "text" : "password"}
               className="p-3 rounded border w-full"
+              disabled={disabled}
             />
           </div>
           <button
             type="button"
             onClick={() => setShowPassword((s) => !s)}
             className="right-2 top-2 text-sm text-slate-500"
+            disabled={disabled}
           >
             {showPassword ? "Hide Password" : "Show Password"}
           </button>
@@ -247,6 +323,7 @@ export default function Page() {
                 type="checkbox"
                 checked={rememberMe}
                 onChange={(e) => setRememberMe(e.target.checked)}
+                disabled={disabled}
               />
               Remember me
             </label>
@@ -255,14 +332,19 @@ export default function Page() {
           <div className="flex gap-3">
             <button
               type="submit"
-              className="bg-teal-500 text-white py-2 px-4 rounded"
+              className="bg-teal-500 text-white py-2 px-4 rounded inline-flex items-center gap-2"
+              disabled={disabled}
             >
-              {isRegister ? "Register" : "Login"}
+              {(authLoading || submitting) && (
+                <ButtonSpinner className="h-4 w-4 text-white" />
+              )}
+              <span>{isRegister ? "Register" : "Login"}</span>
             </button>
             <button
               type="button"
               onClick={() => openGoogle()}
               className="px-4 py-2 rounded border flex-1"
+              disabled={disabled}
             >
               Sign in with Google
             </button>
@@ -273,6 +355,7 @@ export default function Page() {
               type="button"
               onClick={() => setShowForgot(true)}
               className="text-sm text-slate-500"
+              disabled={disabled}
             >
               Forgot password?
             </button>
@@ -296,7 +379,10 @@ export default function Page() {
                   className="p-2 border rounded"
                 />
                 <div className="flex gap-2">
-                  <button className="px-3 py-2 bg-teal-500 text-white rounded">
+                  <button
+                    className="px-3 py-2 bg-teal-500 text-white rounded"
+                    disabled={authLoading}
+                  >
                     Send reset token
                   </button>
                   <button

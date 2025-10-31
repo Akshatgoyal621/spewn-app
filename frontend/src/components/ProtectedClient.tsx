@@ -1,16 +1,32 @@
-'use client'
-import { ReactNode, useEffect, useState } from 'react'
-import { useAuth } from '../lib/auth-client'
+// components/ProtectedClient.tsx
+"use client";
+import {ReactNode, useEffect, useState} from "react";
+import {useRouter} from "next/navigation";
+import { useAuth } from "@/lib/auth-client";
 
-export default function ProtectedClient({ children }: { children: ReactNode }) {
-  const { user, loading, fetchMe } = useAuth()
-  const [checked, setChecked] = useState(false)
+export default function ProtectedClient({children}: {children: ReactNode}) {
+  const {user, loading, fetchMe} = useAuth();
+  const router = useRouter();
+  const [checked, setChecked] = useState(false);
 
   useEffect(() => {
-    (async()=>{ await fetchMe(); setChecked(true) })()
-  }, [fetchMe])
+    (async () => {
+      try {
+        await fetchMe();
+      } finally {
+        setChecked(true);
+      }
+    })();
+  }, [fetchMe]);
 
-  if (!checked || loading) return <div className="p-6">Checking auth...</div>
-  if (!user) return <div className="p-6">Redirecting…</div>
-  return <>{children}</>
+  // show checking state while verifying or fetching
+  if (!checked || loading) return <div className="p-6">Checking auth...</div>;
+
+  // if not authenticated redirect to login
+  if (!user) {
+    router.push("/");
+    return <div className="p-6">Redirecting…</div>;
+  }
+
+  return <>{children}</>;
 }

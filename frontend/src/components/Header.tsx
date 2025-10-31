@@ -4,20 +4,26 @@ import React, {useEffect, useState, useCallback, useRef} from "react";
 import {useRouter, usePathname} from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
-import {useAuth} from "../lib/auth-client";
+import {useAuth} from "@/lib/auth-client";
 
 /**
  * Header — updated:
+ *  - uses auth-client.loading
+ *  - local logoutLoading for logout action
  *  - logo 40x20
  *  - 'Profile' replaced with 'Dashboard'
  *  - primary button routes based on onboarding state:
  *      * not onboarded -> /onboarding
  *      * onboarded -> /dashboard
  *  - white background, teal accents, responsive, accessible
+ *
+ * Important fix: clear client-side fallback cookie on logout and await fetchMe()
+ * so auth context becomes null before navigating away. This prevents a stale
+ * fallback token or race from redirecting back to the dashboard.
  */
 
 export default function Header() {
-  const {user, fetchMe} = useAuth();
+  const {user, fetchMe, loading} = useAuth();
   const router = useRouter();
   const pathname = usePathname() ?? "/";
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -26,7 +32,8 @@ export default function Header() {
   const [displayEmail, setDisplayEmail] = useState<string | undefined>(
     user?.email
   );
-  const [authLoading, setAuthLoading] = useState(false);
+  // local loading state for logout action only
+  const [logoutLoading, setLogoutLoading] = useState(false);
 
   // account dropdown state
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -66,35 +73,61 @@ export default function Header() {
     [onboardComplete, router, user]
   );
 
-  // logout
+  // Helper: clear client fallback cookie (spewn_client_token)
+  function clearClientTokenCookie() {
+    if (typeof document === "undefined") return;
+    // expire cookie immediately
+    document.cookie =
+      "spewn_client_token=; path=/; Max-Age=0; samesite=lax" +
+      (typeof window !== "undefined" && window.location.hostname === "localhost"
+        ? ""
+        : "; secure");
+  }
+
+  // logout — clear fallback cookie and refresh auth context before navigating
   async function onLogout() {
     try {
       setDropdownOpen(false);
       setMobileOpen(false);
       setDisplayEmail(undefined);
-      setAuthLoading(true);
+      setLogoutLoading(true);
 
+      // 1) tell server to destroy session / cookies
       await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/auth/logout`, {
         method: "POST",
         credentials: "include",
+      }).catch(() => {
+        /* ignore network errors; still attempt cleanup */
       });
 
+      // 2) clear client fallback cookie (important for environments where httpOnly cookies are blocked)
+      clearClientTokenCookie();
+
+      // 3) refresh local auth context so user becomes null
       if (typeof fetchMe === "function") {
-        await fetchMe().catch(() => {});
+        try {
+          await fetchMe();
+        } catch (err) {
+          // ignore — we'll still navigate away
+          console.warn("fetchMe after logout failed:", err);
+        }
       }
 
+      // 4) refresh the router (optional) and navigate to home/login
       try {
         (router as any).refresh?.();
       } catch {}
 
-      // after logout send user to login
-      router.push("/");
+      // Use replace so back button doesn't take the user back into an authenticated page
+      router.replace("/");
     } catch (err) {
       console.error("Logout failed:", err);
+      // best-effort fallback: clear cookie and navigate
+      clearClientTokenCookie();
       if (typeof fetchMe === "function") fetchMe().catch(() => {});
-      router.push("/");
+      router.replace("/");
     } finally {
-      setAuthLoading(false);
+      setLogoutLoading(false);
     }
   }
 
@@ -133,6 +166,8 @@ export default function Header() {
       className={`inline-block h-3 rounded bg-slate-200 animate-pulse ${width}`}
     />
   );
+
+  const showSkeleton = loading || logoutLoading;
 
   return (
     <header className="sticky top-0 z-50 bg-white shadow-sm border-b border-slate-200">
@@ -180,7 +215,7 @@ export default function Header() {
               </Link>
             )}
 
-            {authLoading ? (
+            {showSkeleton ? (
               <div className="flex items-center gap-3">
                 <SkeletonAvatar />
                 <div className="flex flex-col gap-1">
@@ -231,7 +266,7 @@ export default function Header() {
                       className="w-full text-left px-3 py-2 text-sm text-rose-600 hover:bg-rose-50"
                       role="menuitem"
                     >
-                      Logout
+                      {logoutLoading ? "Logging out…" : "Logout"}
                     </button>
                   </div>
                 )}
@@ -311,7 +346,7 @@ export default function Header() {
               </Link>
             )}
 
-            {authLoading ? (
+            {showSkeleton ? (
               <div className="mt-3 flex items-center gap-3">
                 <SkeletonAvatar />
                 <div className="flex flex-col gap-1">
@@ -341,7 +376,7 @@ export default function Header() {
                     onClick={onLogout}
                     className="px-3 py-1 rounded-md bg-rose-50 text-rose-600 hover:bg-rose-100"
                   >
-                    Logout
+                    {logoutLoading ? "Logging out…" : "Logout"}
                   </button>
                 </div>
               </div>
@@ -359,27 +394,6 @@ export default function Header() {
                 Settings
               </Link>
               <div className="border-t my-1" />
-              {/* <Link
-                href="/about"
-                onClick={() => setMobileOpen(false)}
-                className="block px-3 py-2 rounded hover:bg-slate-50"
-              >
-                About
-              </Link>
-              <Link
-                href="/help"
-                onClick={() => setMobileOpen(false)}
-                className="block px-3 py-2 rounded hover:bg-slate-50"
-              >
-                Help
-              </Link>
-              <Link
-                href="/terms"
-                onClick={() => setMobileOpen(false)}
-                className="block px-3 py-2 rounded hover:bg-slate-50"
-              >
-                Terms
-              </Link> */}
             </div>
           </div>
         </div>

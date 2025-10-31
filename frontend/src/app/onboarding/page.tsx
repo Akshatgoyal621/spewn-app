@@ -2,9 +2,9 @@
 
 import React, {useCallback, useEffect, useState} from "react";
 import {useRouter} from "next/navigation";
-import {useAuth} from "../../lib/auth-client";
 import SpewnSection from "@/components/SpewnSection";
 import type {Splits} from "../../app/types/splits";
+import {useAuth} from "@/lib/auth-client";
 
 /* Preset type */
 type Preset = "balanced" | "conservative" | "aggressive";
@@ -100,8 +100,15 @@ export default function OnboardingPage() {
 }
 
 function OnboardingInner() {
-  const {user, fetchMe} = useAuth();
+  const {user, fetchMe, loading: authLoading} = useAuth();
   const router = useRouter();
+
+  // If auth check finished and there's no user, redirect to login
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.push("/");
+    }
+  }, [authLoading, user, router]);
 
   // default to server value if present, otherwise blank/default preset
   const [salary, setSalary] = useState<number | string>(
@@ -127,7 +134,8 @@ function OnboardingInner() {
   );
   const [extraIncome, setExtraIncome] = useState<number | string>("");
 
-  const [loading, setLoading] = useState(false);
+  // local submission state (renamed to avoid colliding with authLoading)
+  const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState("");
 
   // local flags removed: salaryChanged / confirmModalOpen removed (start-new-cycle disabled)
@@ -166,7 +174,7 @@ function OnboardingInner() {
       return;
     }
 
-    setLoading(true);
+    setSubmitting(true);
     try {
       const putBody: any = {
         salary: numericSalary,
@@ -230,7 +238,7 @@ function OnboardingInner() {
       console.error("save error", err);
       setErr(err?.message || "An unexpected error occurred");
     } finally {
-      setLoading(false);
+      setSubmitting(false);
     }
   }, [salary, splits, preset, startMonth, extraIncome, fetchMe, router]);
 
@@ -354,10 +362,10 @@ function OnboardingInner() {
             <div className="flex gap-3 items-center">
               <button
                 type="submit"
-                disabled={loading}
+                disabled={submitting || authLoading}
                 className="bg-teal-500 text-white px-5 py-2 rounded-lg hover:bg-teal-600 transition disabled:opacity-60"
               >
-                {loading ? "Saving..." : "Save & Continue"}
+                {submitting ? "Saving..." : "Save & Continue"}
               </button>
               <button
                 type="button"

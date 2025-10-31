@@ -57,7 +57,14 @@ function useKeyNavigation(listLength: number) {
 function DashboardInner() {
   const {isMobile} = useDeviceType();
   const router = useRouter();
-  const {user, fetchMe} = useAuth();
+  // include loading from auth so we can show proper "auth checking" UI
+  const {user, fetchMe, loading} = useAuth();
+
+  useEffect(() => {
+    if (!loading && !user) {
+      router.push("/");
+    }
+  }, [loading, user, router]);
 
   const CARD_MIN_HEIGHT = 520; // px, ensures both side-by-side cards look equal
 
@@ -87,10 +94,11 @@ function DashboardInner() {
   const {highlight, setHighlight, onKey} = useKeyNavigation(10);
 
   // Category suggestions by bucket (normalized keys)
+  // NOTE: keys match the split keys you use across the app (snake_case)
   const categorySuggestions: Record<string, string[]> = {
     savings: ["SIP", "RD", "FD", "Stocks", "Other"],
     parents_preserve: ["Parents", "Preserve", "Other"],
-    extras: ["Other"],
+    extras_buffer: ["Other"],
     wants: ["Dinner out", "Subscriptions", "Shopping", "Other"],
     needs: [
       "Rent",
@@ -445,6 +453,21 @@ function DashboardInner() {
   }
 
   // Auth verifying user:
+  if (loading) {
+    return (
+      <main className="py-8 px-4">
+        <div className="rounded-2xl p-6 bg-white border border-gray-100 shadow-sm text-center">
+          <div className="text-lg font-semibold text-slate-700">
+            Checking auth…
+          </div>
+          <div className="text-sm text-slate-500 mt-2">
+            Verifying session — one moment.
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   if (!user) {
     return (
       <main className="py-8 px-4">
@@ -645,7 +668,7 @@ function DashboardInner() {
                           className={`mt-1 text-lg font-semibold ${
                             totalRemaining < 0
                               ? "text-rose-600"
-                              : "text-rose-600"
+                              : "text-slate-900"
                           }`}
                         >
                           {formatCurrency(totalSpent)}
@@ -695,7 +718,8 @@ function DashboardInner() {
 
                         <button
                           onClick={() => {
-                            console.log("Export in progress...");
+                            // export the current month's transactions as default
+                            exportTransactionsCSV(transactionsThisMonth);
                           }}
                           className="px-3 py-2 rounded bg-teal-600 text-white text-sm hover:brightness-95"
                           type="button"
@@ -874,7 +898,7 @@ function DashboardInner() {
                             {formatCurrency(spent)}
                           </span>
                         </div>
-                        <div className="hidden sm:block">
+                        <div className="">
                           Allocated:{" "}
                           <span className="text-slate-700 font-medium">
                             {formatCurrency(alloc)}
@@ -883,14 +907,14 @@ function DashboardInner() {
                       </div>
 
                       {/* Row 4: actions */}
-                      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="mt-3 flex justify-between gap-4">
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             openBucketDetails(k);
                           }}
-                          className="w-full px-3 py-2 rounded text-sm font-medium border border-slate-200 text-teal-600 hover:bg-slate-50"
+                          className="text-sm font-medium text-teal-600 hover:underline focus:outline-none"
                           aria-label={`View ${friendlyName}`}
                         >
                           View
@@ -903,7 +927,7 @@ function DashboardInner() {
                             setNewBucket(k);
                             setOpenAddModal(true);
                           }}
-                          className="w-full px-3 py-2 rounded text-sm font-medium bg-teal-600 text-white hover:brightness-95"
+                          className="text-sm font-medium text-teal-600 hover:underline focus:outline-none"
                           aria-label={`Add spend to ${friendlyName}`}
                         >
                           Add spend
@@ -1222,8 +1246,9 @@ function DashboardInner() {
       )}
 
       {/* All Transactions Modal - shows transactions for the current month */}
+      {/* All Transactions Modal - responsive: bottom-sheet on mobile, centered dialog on desktop */}
       {openAllTxnsModal && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center pt-10 px-4">
+        <div className="fixed inset-0 z-50 flex items-start justify-center">
           {/* backdrop */}
           <div
             className="absolute inset-0"
@@ -1233,37 +1258,114 @@ function DashboardInner() {
             }}
             onClick={() => setOpenAllTxnsModal(false)}
           />
-          <div
-            className="relative w-full max-w-4xl bg-white rounded-2xl shadow-lg z-10 overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-            role="dialog"
-            aria-modal="true"
-            aria-label="All transactions this month"
-          >
-            <div className="flex items-center justify-between p-4 border-b">
-              <div>
-                <div className="text-lg font-semibold text-teal-600">
-                  Transactions — This month
+
+          {/* Desktop: centered panel; Mobile: bottom sheet */}
+          {isMobile ? (
+            // Mobile bottom-sheet layout
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="All transactions this month"
+              className="relative z-10 w-full max-w-full h-[85vh] mt-auto bg-white rounded-t-2xl shadow-lg overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* drag-handle */}
+              <div className="w-full flex items-center justify-center py-3">
+                <div className="w-12 h-1.5 rounded-full bg-slate-200" />
+              </div>
+
+              {/* header (sticky) */}
+              <div className="px-4 py-3 border-b sticky top-0 bg-white z-20 flex items-center justify-between">
+                <div>
+                  <div className="text-lg font-semibold text-teal-600">
+                    Transactions — This month
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    Showing {transactionsThisMonth.length} total • Total:{" "}
+                    <span className="font-medium">
+                      {formatCurrency(
+                        filteredMonthTxns.reduce(
+                          (s, t) => s + Number(t.amount || 0),
+                          0
+                        )
+                      )}
+                    </span>
+                  </div>
                 </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  Showing {transactionsThisMonth.length} total • Total:{" "}
-                  <span className="font-medium">
-                    {formatCurrency(
-                      filteredMonthTxns.reduce(
-                        (s, t) => s + Number(t.amount || 0),
-                        0
-                      )
-                    )}
-                  </span>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setOpenAllTxnsModal(false)}
+                    className="px-3 py-1 rounded bg-slate-100 text-sm"
+                    aria-label="Close"
+                  >
+                    Close
+                  </button>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              {/* content */}
+              <div className="p-4 overflow-auto h-[calc(85vh-96px)]">
+                {loadingTxns ? (
+                  <div className="text-sm text-slate-500">
+                    Loading transactions…
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredMonthTxns.length === 0 ? (
+                      <div className="text-sm text-slate-400">
+                        No transactions found for this month.
+                      </div>
+                    ) : (
+                      filteredMonthTxns.map((t) => (
+                        <div
+                          key={t._id ?? t.createdAt}
+                          className="flex items-center justify-between bg-slate-50 p-3 rounded"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium truncate">
+                              {t.category ?? "—"}
+                            </div>
+                            <div className="text-xs text-slate-400 truncate">
+                              {t.bucket} •{" "}
+                              {t.createdAt
+                                ? new Date(t.createdAt).toLocaleString()
+                                : ""}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3 ml-4">
+                            <div className="text-sm font-semibold text-rose-600">
+                              {formatCurrency(t.amount)}
+                            </div>
+                            <button
+                              onClick={() => {
+                                const ok = window.confirm(
+                                  "Delete this transaction?"
+                                );
+                                if (!ok) return;
+                                handleDeleteTransaction(t._id);
+                              }}
+                              className="text-xs text-slate-500"
+                              type="button"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* footer (sticky) */}
+              <div className="px-4 py-3 border-t sticky bottom-0 bg-white z-20 flex items-center gap-2">
                 <input
                   value={txnSearch}
                   onChange={(e) => setTxnSearch(e.target.value)}
                   placeholder="Search bucket, category, amount..."
-                  className="px-3 py-2 border rounded text-sm"
+                  className="flex-1 px-3 py-2 border rounded text-sm"
                   type="search"
                 />
                 <button
@@ -1273,70 +1375,115 @@ function DashboardInner() {
                 >
                   Export CSV
                 </button>
-                <button
-                  onClick={() => setOpenAllTxnsModal(false)}
-                  className="px-3 py-2 rounded bg-slate-100 text-sm"
-                  type="button"
-                >
-                  Close
-                </button>
               </div>
             </div>
-
-            <div className="max-h-[70vh] overflow-auto p-4">
-              {loadingTxns ? (
-                <div className="text-sm text-slate-500">
-                  Loading transactions…
+          ) : (
+            // Desktop centered dialog
+            <div
+              className="relative w-full max-w-4xl bg-white rounded-2xl shadow-lg z-10 overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-label="All transactions this month"
+            >
+              <div className="flex items-center justify-between p-4 border-b">
+                <div>
+                  <div className="text-lg font-semibold text-teal-600">
+                    Transactions — This month
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    Showing {transactionsThisMonth.length} total • Total:{" "}
+                    <span className="font-medium">
+                      {formatCurrency(
+                        filteredMonthTxns.reduce(
+                          (s, t) => s + Number(t.amount || 0),
+                          0
+                        )
+                      )}
+                    </span>
+                  </div>
                 </div>
-              ) : (
-                <div className="space-y-3">
-                  {filteredMonthTxns.length === 0 ? (
-                    <div className="text-sm text-slate-400">
-                      No transactions found for this month.
-                    </div>
-                  ) : (
-                    filteredMonthTxns.map((t) => (
-                      <div
-                        key={t._id ?? t.createdAt}
-                        className="flex items-center justify-between bg-slate-50 p-3 rounded"
-                      >
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium truncate">
-                            {t.category ?? "—"}
-                          </div>
-                          <div className="text-xs text-slate-400 truncate">
-                            {t.bucket} •{" "}
-                            {t.createdAt
-                              ? new Date(t.createdAt).toLocaleString()
-                              : ""}
-                          </div>
-                        </div>
 
-                        <div className="flex items-center gap-3 ml-4">
-                          <div className="text-sm font-semibold text-rose-600">
-                            {formatCurrency(t.amount)}
-                          </div>
-                          <button
-                            onClick={() => {
-                              const ok = window.confirm(
-                                "Delete this transaction?"
-                              );
-                              if (!ok) return;
-                              handleDeleteTransaction(t._id);
-                            }}
-                            className="text-xs text-slate-500"
-                            type="button"
-                          >
-                            Delete
-                          </button>
-                        </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    value={txnSearch}
+                    onChange={(e) => setTxnSearch(e.target.value)}
+                    placeholder="Search bucket, category, amount..."
+                    className="px-3 py-2 border rounded text-sm"
+                    type="search"
+                  />
+                  <button
+                    onClick={() => exportTransactionsCSV(filteredMonthTxns)}
+                    className="px-3 py-2 rounded bg-teal-600 text-white text-sm"
+                    type="button"
+                  >
+                    Export CSV
+                  </button>
+                  <button
+                    onClick={() => setOpenAllTxnsModal(false)}
+                    className="px-3 py-2 rounded bg-slate-100 text-sm"
+                    type="button"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              <div className="max-h-[70vh] overflow-auto p-4">
+                {loadingTxns ? (
+                  <div className="text-sm text-slate-500">
+                    Loading transactions…
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredMonthTxns.length === 0 ? (
+                      <div className="text-sm text-slate-400">
+                        No transactions found for this month.
                       </div>
-                    ))
-                  )}
-                </div>
-              )}
+                    ) : (
+                      filteredMonthTxns.map((t) => (
+                        <div
+                          key={t._id ?? t.createdAt}
+                          className="flex items-center justify-between bg-slate-50 p-3 rounded"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-sm font-medium truncate">
+                              {t.category ?? "—"}
+                            </div>
+                            <div className="text-xs text-slate-400 truncate">
+                              {t.bucket} •{" "}
+                              {t.createdAt
+                                ? new Date(t.createdAt).toLocaleString()
+                                : ""}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3 ml-4">
+                            <div className="text-sm font-semibold text-rose-600">
+                              {formatCurrency(t.amount)}
+                            </div>
+                            <button
+                              onClick={() => {
+                                const ok = window.confirm(
+                                  "Delete this transaction?"
+                                );
+                                if (!ok) return;
+                                handleDeleteTransaction(t._id);
+                              }}
+                              className="text-xs text-slate-500"
+                              type="button"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
     </main>
