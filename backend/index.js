@@ -1,4 +1,4 @@
-// index.js (updated: cookie + bearer token support, debug route)
+// index.js (patched: trust-proxy, cookie domain support, token query fallback, CORS tweaks)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -12,18 +12,26 @@ const User = require('./models/User');
 const Transaction = require('./models/Transaction');
 
 const app = express();
-app.use(express.json());
-app.use(cookieParser());
 
+// If behind a proxy (Render, Vercel, Heroku) allow express to trust X-Forwarded-* headers
+// This is important so secure cookies behave correctly when served over HTTPS behind a proxy.
 const {
     PORT = 4000,
     MONGODB_URI,
     JWT_SECRET,
     COOKIE_NAME = 'spewn_token',
+    COOKIE_DOMAIN= "",
     FRONTEND_URL = 'http://localhost:3000', // set to https://spewn-app.vercel.app in Render env
     DEV_FRONTEND_URL = 'http://localhost:3000',
     NODE_ENV = 'development'
 } = process.env;
+
+if (NODE_ENV === 'production') {
+    app.set('trust proxy', 1);
+}
+
+app.use(express.json());
+app.use(cookieParser());
 
 // Allowed origins: use the destructured vars (not process.env.* inside the array)
 const allowedOrigins = [FRONTEND_URL, DEV_FRONTEND_URL].filter(Boolean);
@@ -50,6 +58,14 @@ const corsOptions = {
 // Apply CORS before routes
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions)); // explicit preflight handling
+
+// Ensure responses indicate credentials allowed (some clients rely on this)
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Credentials', 'true');
+    // Vary by origin helps caches and proxies not to reuse responses across origins
+    res.header('Vary', 'Origin');
+    next();
+});
 
 // DB connect (production expects MONGODB_URI)
 async function connectDB() {
@@ -78,7 +94,7 @@ function signToken(payload) {
     return jwt.sign(payload, JWT_SECRET, { expiresIn: '70d' });
 }
 
-// authMiddleware now accepts either cookie or Bearer token
+// authMiddleware now accepts cookie, Bearer token, or token passed via query (?token=)
 async function authMiddleware(req, res, next) {
     try {
         // 1) check cookie first
@@ -110,6 +126,21 @@ async function authMiddleware(req, res, next) {
                 return next();
             } catch (err) {
                 console.warn('Bearer token invalid:', err.message);
+                return res.status(401).json({ message: 'Unauthorized' });
+            }
+        }
+
+        // 3) fallback: token provided via query parameter (useful for mobile / deep links)
+        if (req.query && req.query.token) {
+            try {
+                const decoded = jwt.verify(req.query.token, JWT_SECRET);
+                const user = await User.findById(decoded.id);
+                if (!user) return res.status(401).json({ message: 'Unauthorized' });
+                req.user = user;
+                req.authMethod = 'query';
+                return next();
+            } catch (err) {
+                console.warn('Query token invalid:', err.message);
                 return res.status(401).json({ message: 'Unauthorized' });
             }
         }
@@ -158,22 +189,25 @@ async function ensureMonthlyAutomation(userId) {
 
 // Cookie options helper
 function buildCookieOptions({ rememberMe = false } = {}) {
+    const base = {};
+    if (COOKIE_DOMAIN) base.domain = COOKIE_DOMAIN;
+
     if (NODE_ENV === 'production') {
         // Production: allow cross-site cookies (frontend and backend on different domains)
-        return {
+        return Object.assign(base, {
             httpOnly: true,
             sameSite: 'none',   // required for cross-site cookies
             secure: true,       // must be true on HTTPS
             ...(rememberMe ? { maxAge: 1000 * 60 * 60 * 24 * 30 } : {})
-        };
+        });
     } else {
         // Local dev: sameSite none + secure true will break cookies in many local setups
-        return {
+        return Object.assign(base, {
             httpOnly: true,
             sameSite: 'lax',
             secure: false,
             ...(rememberMe ? { maxAge: 1000 * 60 * 60 * 24 * 30 } : {})
-        };
+        });
     }
 }
 
@@ -186,7 +220,8 @@ app.get('/debug/echo-headers', (req, res) => {
         headers: req.headers,
         cookies: req.cookies,
         origin: req.headers.origin || null,
-        authHeader: req.headers.authorization || null
+        authHeader: req.headers.authorization || null,
+        query: req.query || {}
     });
 });
 

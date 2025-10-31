@@ -3,6 +3,34 @@ import {useState} from "react";
 import {useRouter} from "next/navigation";
 import {useAuth} from "../lib/auth-client";
 
+/**
+ * Helper: set a client-side fallback cookie for token (not httpOnly).
+ * We keep it short-lived (session cookie) so it's only around while the tab is open.
+ * Avoids using localStorage (per request).
+ */
+function setClientTokenCookie(token: string) {
+  if (!token) return;
+  // session cookie (no max-age) so it clears when the browser session ends.
+  // Use secure flag only if running on https and not on localhost.
+  const isLocal =
+    typeof window !== "undefined" && window.location.hostname === "localhost";
+  const secure = !isLocal;
+  // path=/ to allow reuse across site; sameSite=lax to reduce cross-site risks
+  const cookie = `spewn_client_token=${token}; path=/; samesite=lax${
+    secure ? "; secure" : ""
+  }`;
+  try {
+    document.cookie = cookie;
+  } catch (e) {
+    // ignore
+  }
+}
+
+function getClientTokenFromCookie(): string | null {
+  if (typeof document === "undefined") return null;
+  const m = document.cookie.match(/(?:^|;\s*)spewn_client_token=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : null;
+}
 
 export default function Page() {
   const {user, fetchMe} = useAuth();
@@ -24,6 +52,8 @@ export default function Page() {
   const [fpNewPassword, setFpNewPassword] = useState("");
   const [fpStage, setFpStage] = useState<"request" | "reset">("request");
 
+  const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || "";
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setErr("");
@@ -33,29 +63,52 @@ export default function Page() {
       if (isRegister) body.name = name;
       if (!isRegister) body.rememberMe = rememberMe;
 
-      const res = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}${path}`, {
+      // 1) Try cookie + JSON token response flow
+      const res = await fetch(`${BACKEND}${path}`, {
         method: "POST",
-        credentials: "include",
+        credentials: "include", // important for httpOnly cookie
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(body),
       });
+
       const json = await res.json();
       if (!res.ok) throw new Error(json.message || "Error");
 
-      // refresh auth context (cookies set by server)
-      await fetchMe();
+      // Server returned token in JSON (useful as fallback)
+      const token = json?.user?.token;
+      if (token) {
+        // Save fallback in a client cookie (session cookie). Avoid localStorage per request.
+        setClientTokenCookie(token);
+      }
 
-      // fetch fresh /me to make a deterministic redirect decision
-      const meRes = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/auth/me`,
-        {
-          credentials: "include",
+      // Ask auth context to refresh (it may rely on cookies)
+      try {
+        await fetchMe();
+      } catch (e) {
+        // ignore — we'll attempt /me directly below
+      }
+
+      // 2) fetch /api/auth/me via cookie first
+      let meRes = await fetch(`${BACKEND}/api/auth/me`, {
+        credentials: "include",
+      });
+
+      // 3) If server cookie is blocked (iOS/WKWebView), retry with bearer token fallback
+      if (!meRes.ok) {
+        const fallbackToken = token || getClientTokenFromCookie();
+        if (fallbackToken) {
+          meRes = await fetch(`${BACKEND}/api/auth/me`, {
+            headers: {
+              Authorization: `Bearer ${fallbackToken}`,
+              "Content-Type": "application/json",
+            },
+          });
         }
-      );
+      }
 
       if (!meRes.ok) {
-        // fallback: go to onboarding (safe default)
-        router.push("/onboarding");
+        // safe fallback routing if /me still fails
+        router.replace("/onboarding");
         return;
       }
 
@@ -71,9 +124,9 @@ export default function Page() {
       const profileComplete = salaryOk && splitsSum === 100;
 
       if (profileComplete) {
-        router.push("/dashboard");
+        router.replace("/dashboard");
       } else {
-        router.push("/onboarding");
+        router.replace("/onboarding");
       }
     } catch (e: any) {
       setErr(e.message || "Error");
@@ -85,14 +138,11 @@ export default function Page() {
     e.preventDefault();
     setFpMessage("");
     try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/auth/forgot-password`,
-        {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({email: fpEmail}),
-        }
-      );
+      const res = await fetch(`${BACKEND}/api/auth/forgot-password`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({email: fpEmail}),
+      });
       const j = await res.json();
       if (!res.ok) throw new Error(j.message || "Error");
       setFpMessage(
@@ -109,14 +159,11 @@ export default function Page() {
     e.preventDefault();
     setFpMessage("");
     try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/auth/reset-password`,
-        {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({token: fpToken, newPassword: fpNewPassword}),
-        }
-      );
+      const res = await fetch(`${BACKEND}/api/auth/reset-password`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({token: fpToken, newPassword: fpNewPassword}),
+      });
       const j = await res.json();
       if (!res.ok) throw new Error(j.message || "Error");
       setFpMessage(
@@ -134,7 +181,7 @@ export default function Page() {
 
   function openGoogle() {
     // opens backend google auth endpoint which will redirect to Google
-    window.location.href = `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/auth/google`;
+    window.location.href = `${BACKEND}/api/auth/google`;
   }
 
   return (
@@ -303,7 +350,6 @@ export default function Page() {
           </div>
         </div>
       )}
-     
     </main>
   );
 }
