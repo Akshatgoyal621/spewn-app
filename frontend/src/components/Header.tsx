@@ -11,8 +11,6 @@ export default function Header() {
   const [mobileOpen, setMobileOpen] = useState(false)
 
   const onDashboard = pathname.startsWith('/dashboard')
-  const onOnboarding = pathname === '/' || pathname.startsWith('/onboarding')
-
   // Label shown in the single “main” tab (we flip to the other on click)
   const tabLabel = onDashboard ? 'Dashboard' : 'Home'
 
@@ -27,19 +25,19 @@ export default function Header() {
   }
 
   // Clicking the single tab: toggle to the other primary surface
-  function onTabClick(e: React.MouseEvent) {
-    e.preventDefault()
-    if (!user) {
-      router.push('/')
-      return
-    }
-    if (onDashboard) {
-      router.push('/onboarding')
-    } else {
-      router.push('/dashboard')
-    }
-    setMobileOpen(false)
-  }
+//   function onTabClick(e: React.MouseEvent) {
+//     e.preventDefault()
+//     if (!user) {
+//       router.push('/')
+//       return
+//     }
+//     if (onDashboard) {
+//       router.push('/onboarding')
+//     } else {
+//       router.push('/dashboard')
+//     }
+//     setMobileOpen(false)
+//   }
 
   // Close mobile menu when the route changes
   useEffect(() => {
@@ -70,7 +68,7 @@ export default function Header() {
           <nav className="hidden md:flex items-center gap-4">
             {user ? (
               <button
-                onClick={onTabClick}
+                onClick={()=>{console.log("tab clicked...")}}
                 className="px-4 py-2 rounded-md bg-slate-100 hover:bg-slate-200 font-semibold text-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-100 transition"
                 title={`Go to ${onDashboard ? 'Onboarding (edit)' : 'Dashboard'}`}
               >
@@ -138,7 +136,7 @@ export default function Header() {
           <div className="py-3 border-t">
             {user ? (
               <button
-                onClick={onTabClick}
+                onClick={()=>{console.log("tab clicked...")}}
                 className="w-full text-left px-3 py-2 rounded-md bg-slate-100 hover:bg-slate-200 font-semibold text-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-100 transition"
                 title={`Go to ${onDashboard ? 'Onboarding (edit)' : 'Dashboard'}`}
               >

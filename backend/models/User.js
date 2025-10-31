@@ -13,6 +13,9 @@ const SalaryHistorySchema = new mongoose.Schema({
   salary: { type: Number, required: true },
   startMonth: { type: String, default: '' }, // YYYY-MM
   extraIncome: { type: Number, default: 0 },
+  splits: { type: splitsSchema, default: () => ({}) },
+  automate: { type: Boolean, default: false },
+  activeTracking: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 }, { _id: false });
 
@@ -61,3 +64,4 @@ const UserSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 module.exports = mongoose.models.User || mongoose.model('User', UserSchema);
+
