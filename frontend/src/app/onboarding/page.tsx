@@ -5,6 +5,8 @@ import {useRouter} from "next/navigation";
 import SpewnSection from "@/components/SpewnSection";
 import type {Splits} from "../../app/types/splits";
 import {useAuth} from "@/lib/auth-client";
+import fetchWithAuth from "@/lib/fetchWithAuth";
+import {useRequireAuth} from "@/lib/useRequireAuth";
 
 /* Preset type */
 type Preset = "balanced" | "conservative" | "aggressive";
@@ -103,12 +105,8 @@ function OnboardingInner() {
   const {user, fetchMe, loading: authLoading} = useAuth();
   const router = useRouter();
 
-  // If auth check finished and there's no user, redirect to login
-  useEffect(() => {
-    if (!authLoading && !user) {
-      router.push("/");
-    }
-  }, [authLoading, user, router]);
+  // require auth for this page; redirects to "/" if unauthenticated
+  useRequireAuth({redirectTo: "/"});
 
   // default to server value if present, otherwise blank/default preset
   const [salary, setSalary] = useState<number | string>(
@@ -138,9 +136,7 @@ function OnboardingInner() {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState("");
 
-  // local flags removed: salaryChanged / confirmModalOpen removed (start-new-cycle disabled)
-  // allow user to freely change salary and splits but they will not lock a new cycle yet
-
+  // sync local state when server user changes
   useEffect(() => {
     if (!user) return;
     setSalary(user.salary ?? "");
@@ -176,6 +172,15 @@ function OnboardingInner() {
 
     setSubmitting(true);
     try {
+      // ensure auth context is fresh before making a protected call
+      if (typeof fetchMe === "function") {
+        try {
+          await fetchMe();
+        } catch {
+          // ignore — we'll handle auth errors via fetchWithAuth below
+        }
+      }
+
       const putBody: any = {
         salary: numericSalary,
         salaryFrequency: "monthly",
@@ -191,15 +196,30 @@ function OnboardingInner() {
       // the client can pass startMonth. We don't attempt any "startNewCycle" workflows here.
       if (startMonth) putBody.startMonth = startMonth;
 
-      const putRes = await fetch(
+      // Attempt protected PUT using fetchWithAuth. If unauthorized, onUnauthorized will run.
+      const putRes = await fetchWithAuth(
         `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/profile`,
         {
           method: "PUT",
           credentials: "include",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify(putBody),
+        },
+        {
+          onUnauthorized: async () => {
+            // refresh context and send user to login page
+            if (typeof fetchMe === "function") {
+              try {
+                await fetchMe();
+              } catch {
+                // ignore
+              }
+            }
+            router.replace("/");
+          },
         }
       );
+
       if (!putRes.ok) {
         const j = await putRes
           .json()

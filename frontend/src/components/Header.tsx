@@ -1,25 +1,19 @@
 "use client";
 
-import React, {useEffect, useState, useCallback, useRef} from "react";
+import React, {useCallback, useEffect, useState, useRef} from "react";
 import {useRouter, usePathname} from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import {useAuth} from "@/lib/auth-client";
 
 /**
- * Header — updated:
- *  - uses auth-client.loading
- *  - local logoutLoading for logout action
- *  - logo 40x20
- *  - 'Profile' replaced with 'Dashboard'
- *  - primary button routes based on onboarding state:
- *      * not onboarded -> /onboarding
- *      * onboarded -> /dashboard
- *  - white background, teal accents, responsive, accessible
+ * Header — final polished version
  *
- * Important fix: clear client-side fallback cookie on logout and await fetchMe()
- * so auth context becomes null before navigating away. This prevents a stale
- * fallback token or race from redirecting back to the dashboard.
+ * Key points:
+ *  - Uses auth-client.loading to show skeletons
+ *  - Clears client fallback cookie on logout and awaits fetchMe()
+ *  - Uses router.replace after logout to avoid back-button returning to protected pages
+ *  - Disables primary action while authLoading/logoutLoading to avoid races
  */
 
 export default function Header() {
@@ -28,14 +22,11 @@ export default function Header() {
   const pathname = usePathname() ?? "/";
   const [mobileOpen, setMobileOpen] = useState(false);
 
-  // local display email to avoid showing stale email after logout until fetchMe resolves
   const [displayEmail, setDisplayEmail] = useState<string | undefined>(
     user?.email
   );
-  // local loading state for logout action only
   const [logoutLoading, setLogoutLoading] = useState(false);
 
-  // account dropdown state
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
 
@@ -43,25 +34,18 @@ export default function Header() {
     setDisplayEmail(user?.email);
   }, [user?.email]);
 
-  // hide mobile menu when path changes
   useEffect(() => setMobileOpen(false), [pathname]);
 
-  // Use server-provided onboarding flag. Backend uses `onboardComplete` per your API.
   const onboardComplete = Boolean((user as any)?.onboardComplete);
-
-  // Primary label: show Dashboard when onboardComplete, otherwise "Get started"
   const primaryLabel = onboardComplete ? "Dashboard" : "Get started";
 
-  // navigate primary action:
-  // - if not onboarded -> /onboarding
-  // - if onboarded -> /dashboard
   const onPrimaryClick = useCallback(
     (e?: React.MouseEvent) => {
       e?.preventDefault();
+      if (logoutLoading || loading) return; // prevent navigation while auth state is changing
       setMobileOpen(false);
       if (!user) {
-        // If unauthenticated, push to public home /login (or home)
-        router.push("/");
+        router.replace("/");
         return;
       }
       if (onboardComplete) {
@@ -70,7 +54,7 @@ export default function Header() {
         router.push("/onboarding");
       }
     },
-    [onboardComplete, router, user]
+    [onboardComplete, router, user, logoutLoading, loading]
   );
 
   // Helper: clear client fallback cookie (spewn_client_token)
@@ -84,7 +68,6 @@ export default function Header() {
         : "; secure");
   }
 
-  // logout — clear fallback cookie and refresh auth context before navigating
   async function onLogout() {
     try {
       setDropdownOpen(false);
@@ -92,7 +75,7 @@ export default function Header() {
       setDisplayEmail(undefined);
       setLogoutLoading(true);
 
-      // 1) tell server to destroy session / cookies
+      // 1) server: destroy session cookie if possible (best-effort)
       await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}/api/auth/logout`, {
         method: "POST",
         credentials: "include",
@@ -100,10 +83,10 @@ export default function Header() {
         /* ignore network errors; still attempt cleanup */
       });
 
-      // 2) clear client fallback cookie (important for environments where httpOnly cookies are blocked)
+      // 2) client: remove fallback token cookie so future requests don't accidentally send it
       clearClientTokenCookie();
 
-      // 3) refresh local auth context so user becomes null
+      // 3) refresh auth context so useAuth becomes null
       if (typeof fetchMe === "function") {
         try {
           await fetchMe();
@@ -113,16 +96,14 @@ export default function Header() {
         }
       }
 
-      // 4) refresh the router (optional) and navigate to home/login
+      // 4) avoid pushing an authenticated route onto history — replace to landing page
       try {
         (router as any).refresh?.();
       } catch {}
 
-      // Use replace so back button doesn't take the user back into an authenticated page
       router.replace("/");
     } catch (err) {
       console.error("Logout failed:", err);
-      // best-effort fallback: clear cookie and navigate
       clearClientTokenCookie();
       if (typeof fetchMe === "function") fetchMe().catch(() => {});
       router.replace("/");
@@ -157,7 +138,6 @@ export default function Header() {
     return (parts[0][0] + parts[1][0]).toUpperCase();
   }
 
-  // skeleton placeholders
   const SkeletonAvatar = () => (
     <span className="inline-block w-8 h-8 rounded-full bg-slate-200 animate-pulse" />
   );
@@ -168,21 +148,22 @@ export default function Header() {
   );
 
   const showSkeleton = loading || logoutLoading;
+  const primaryDisabled = loading || logoutLoading;
 
   return (
     <header className="sticky top-0 z-50 bg-white shadow-sm border-b border-slate-200">
       <div className="mx-auto px-4 sm:px-6 lg:px-8">
-        {/* top row */}
         <div className="flex h-16 items-center justify-between">
-          {/* brand */}
           <div className="flex items-center gap-3 min-w-0">
             <Link
               href={onboardComplete ? "/dashboard" : "/onboarding"}
               className="inline-flex items-center gap-3"
               aria-label="SPEWN Home"
+              onClick={(e) => {
+                if (primaryDisabled) e.preventDefault();
+              }}
             >
-              {/* logo 40x20 */}
-              <div className="">
+              <div>
                 <Image
                   src="/spewn-logo-main.png"
                   alt="SPEWN"
@@ -194,15 +175,18 @@ export default function Header() {
             </Link>
           </div>
 
-          {/* desktop nav */}
           <nav className="hidden md:flex items-center gap-4">
             {user ? (
               <button
                 onClick={onPrimaryClick}
-                className="px-4 py-2 rounded-md bg-slate-50 hover:bg-slate-100 font-semibold text-slate-800 transition focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2"
+                className={`px-4 py-2 rounded-md bg-slate-50 hover:bg-slate-100 font-semibold text-slate-800 transition focus:outline-none focus:ring-2 focus:ring-teal-500 focus:ring-offset-2 ${
+                  primaryDisabled ? "opacity-60 cursor-not-allowed" : ""
+                }`}
                 title={
                   onboardComplete ? "Open dashboard" : "Complete onboarding"
                 }
+                aria-disabled={primaryDisabled}
+                disabled={primaryDisabled}
               >
                 {primaryLabel}
               </button>
@@ -245,7 +229,6 @@ export default function Header() {
                   </div>
                 </button>
 
-                {/* dropdown */}
                 {dropdownOpen && (
                   <div
                     role="menu"
@@ -265,6 +248,7 @@ export default function Header() {
                       onClick={onLogout}
                       className="w-full text-left px-3 py-2 text-sm text-rose-600 hover:bg-rose-50"
                       role="menuitem"
+                      disabled={logoutLoading}
                     >
                       {logoutLoading ? "Logging out…" : "Logout"}
                     </button>
@@ -274,7 +258,6 @@ export default function Header() {
             ) : null}
           </nav>
 
-          {/* mobile hamburger */}
           <div className="md:hidden flex items-center">
             <button
               onClick={() => setMobileOpen((v) => !v)}
@@ -321,7 +304,6 @@ export default function Header() {
           </div>
         </div>
 
-        {/* Mobile menu */}
         <div
           id="mobile-menu"
           className={`md:hidden overflow-hidden transition-[max-height,opacity] duration-300 ${
@@ -333,6 +315,7 @@ export default function Header() {
               <button
                 onClick={onPrimaryClick}
                 className="w-full text-left px-3 py-2 rounded-md bg-slate-50 hover:bg-slate-100 font-semibold text-slate-800"
+                disabled={primaryDisabled}
               >
                 {primaryLabel}
               </button>
@@ -375,14 +358,13 @@ export default function Header() {
                   <button
                     onClick={onLogout}
                     className="px-3 py-1 rounded-md bg-rose-50 text-rose-600 hover:bg-rose-100"
+                    disabled={logoutLoading}
                   >
                     {logoutLoading ? "Logging out…" : "Logout"}
                   </button>
                 </div>
               </div>
             ) : null}
-
-            {/* optional links */}
 
             <div className="mt-4 grid gap-2 text-sm">
               <Link

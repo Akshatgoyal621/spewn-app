@@ -15,11 +15,13 @@ import {
   round as _round,
 } from "lodash";
 import {useAuth} from "@/lib/auth-client";
+import fetchWithAuth from "@/lib/fetchWithAuth";
 
 /*
   DashboardInner (refactored + fixes)
-  - fixes: first-load transactions, delete optimistic-only txns, no truncation of state
-  - improvements: memoized month filtering, robust date parsing, better defaults
+  - uses fetchWithAuth for protected requests
+  - onUnauthorized attempts fetchMe() once and redirects if still unauthenticated
+  - shows auth-check UI while auth loading
 */
 
 type ChartDatum = {key: string; value: number};
@@ -60,9 +62,10 @@ function DashboardInner() {
   // include loading from auth so we can show proper "auth checking" UI
   const {user, fetchMe, loading} = useAuth();
 
+  // redirect to sign-in if auth resolved and no user
   useEffect(() => {
     if (!loading && !user) {
-      router.push("/");
+      router.replace("/");
     }
   }, [loading, user, router]);
 
@@ -175,24 +178,38 @@ function DashboardInner() {
     if (!user) return;
     setLoadingTxns(true);
     try {
-      // ask the backend for all transactions; many APIs accept ?limit=0 to mean "no limit"
-      const res = await fetch(
+      const res = await fetchWithAuth(
         `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/transactions?limit=0`,
         {
           credentials: "include",
+        },
+        {
+          onUnauthorized: async () => {
+            // Attempt to refresh auth context once
+            if (typeof fetchMe === "function") {
+              try {
+                await fetchMe();
+                // if fetchMe succeeded and user exists, no redirect
+                if (!user) router.replace("/");
+              } catch {
+                router.replace("/");
+              }
+            } else {
+              router.replace("/");
+            }
+          },
         }
       );
+
       if (!res.ok) throw new Error("Failed to load transactions");
       const data = await res.json();
 
-      // ensure we store the full list (server is source of truth)
-      // expected: data.transactions is an array sorted newest-first
       setTransactions(
         Array.isArray(data.transactions) ? data.transactions : []
       );
     } catch (e) {
       console.error("loadTxns failed:", e);
-      // don't change state further — keep whatever is present
+      // keep whatever is present
     } finally {
       setLoadingTxns(false);
     }
@@ -204,14 +221,7 @@ function DashboardInner() {
     // call in microtask so UI can render first
     (async () => {
       await loadTxns();
-      if (fetchMe) {
-        try {
-          await fetchMe();
-        } catch (err) {
-          // ignore fetchMe errors silently
-          console.warn("fetchMe failed:", err);
-        }
-      }
+      // avoid forcing fetchMe here — fetchWithAuth's onUnauthorized will attempt refresh when needed
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
@@ -272,19 +282,33 @@ function DashboardInner() {
       // optimistic update — do NOT slice away older transactions
       setTransactions((prev) => [{...optimism, _id: tempId}, ...prev]);
 
-      const res = await fetch(
+      const res = await fetchWithAuth(
         `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/transactions`,
         {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           credentials: "include",
           body: JSON.stringify(payload),
+        },
+        {
+          onUnauthorized: async () => {
+            if (typeof fetchMe === "function") {
+              try {
+                await fetchMe();
+                if (!user) router.replace("/");
+              } catch {
+                router.replace("/");
+              }
+            } else {
+              router.replace("/");
+            }
+          },
         }
       );
 
       if (!res.ok) {
-        const err = await res.text();
-        throw new Error(err || "Failed to save");
+        const errText = await res.text().catch(() => "");
+        throw new Error(errText || "Failed to save");
       }
 
       // server will return canonical data; reload
@@ -327,17 +351,33 @@ function DashboardInner() {
     setTransactions((prev) => prev.filter((t) => t._id !== txnId));
 
     try {
-      const res = await fetch(
+      const res = await fetchWithAuth(
         `${process.env.NEXT_PUBLIC_BACKEND_URL}/api/transactions/${txnId}`,
         {
           method: "DELETE",
           credentials: "include",
+        },
+        {
+          onUnauthorized: async () => {
+            if (typeof fetchMe === "function") {
+              try {
+                await fetchMe();
+                if (!user) router.replace("/");
+              } catch {
+                router.replace("/");
+              }
+            } else {
+              router.replace("/");
+            }
+          },
         }
       );
+
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
         throw new Error(errText || "Failed to delete");
       }
+
       // reload to be safe / canonical
       await loadTxns();
     } catch (err) {
@@ -1245,7 +1285,6 @@ function DashboardInner() {
         </motion.div>
       )}
 
-      {/* All Transactions Modal - shows transactions for the current month */}
       {/* All Transactions Modal - responsive: bottom-sheet on mobile, centered dialog on desktop */}
       {openAllTxnsModal && (
         <div className="fixed inset-0 z-50 flex items-start justify-center">
@@ -1259,9 +1298,8 @@ function DashboardInner() {
             onClick={() => setOpenAllTxnsModal(false)}
           />
 
-          {/* Desktop: centered panel; Mobile: bottom sheet */}
+          {/* Mobile bottom-sheet / Desktop centered */}
           {isMobile ? (
-            // Mobile bottom-sheet layout
             <div
               role="dialog"
               aria-modal="true"
@@ -1269,12 +1307,10 @@ function DashboardInner() {
               className="relative z-10 w-full max-w-full h-[85vh] mt-auto bg-white rounded-t-2xl shadow-lg overflow-hidden"
               onClick={(e) => e.stopPropagation()}
             >
-              {/* drag-handle */}
               <div className="w-full flex items-center justify-center py-3">
                 <div className="w-12 h-1.5 rounded-full bg-slate-200" />
               </div>
 
-              {/* header (sticky) */}
               <div className="px-4 py-3 border-b sticky top-0 bg-white z-20 flex items-center justify-between">
                 <div>
                   <div className="text-lg font-semibold text-teal-600">
@@ -1304,7 +1340,6 @@ function DashboardInner() {
                 </div>
               </div>
 
-              {/* content */}
               <div className="p-4 overflow-auto h-[calc(85vh-96px)]">
                 {loadingTxns ? (
                   <div className="text-sm text-slate-500">
@@ -1359,7 +1394,6 @@ function DashboardInner() {
                 )}
               </div>
 
-              {/* footer (sticky) */}
               <div className="px-4 py-3 border-t sticky bottom-0 bg-white z-20 flex items-center gap-2">
                 <input
                   value={txnSearch}
@@ -1378,7 +1412,6 @@ function DashboardInner() {
               </div>
             </div>
           ) : (
-            // Desktop centered dialog
             <div
               className="relative w-full max-w-4xl bg-white rounded-2xl shadow-lg z-10 overflow-hidden"
               onClick={(e) => e.stopPropagation()}

@@ -2,6 +2,7 @@
 import React, {useEffect, useState} from "react";
 import {useRouter} from "next/navigation";
 import {useAuth} from "@/lib/auth-client";
+import { useDeviceType } from "@/utils/useDeviceType";
 
 /**
  * Helper: set a client-side fallback cookie for token (not httpOnly).
@@ -241,9 +242,11 @@ export default function LoginPage() {
   }
 
   const disabled = authLoading || submitting;
+   const {isMobile, isTablet} = useDeviceType();
+ 
 
   return (
-    <main className="py-12" style={{marginTop:"130px"}}>
+    <main className="py-12" style={{marginTop: isMobile ? "50px" : isTablet ? "60px" : "130px"}}>
       <section className="bg-white rounded-2xl shadow p-8 max-w-md mx-auto">
         <div className="flex gap-2 mt-6">
           <button
