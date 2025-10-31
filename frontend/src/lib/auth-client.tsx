@@ -1,6 +1,6 @@
 // lib/auth-client.tsx
 "use client";
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, {createContext, useContext, useEffect, useState} from "react";
 type SplitMap = Record<string, number>;
 
 type UserShape = {
@@ -25,11 +25,20 @@ type UserShape = {
   startMonth?: string;
 };
 
+/**
+ * NOTE: added `loading` field to keep compatibility with components
+ * that expect `loading` instead of `isLoading`.
+ */
 type AuthContextShape = {
   user: UserShape | null;
   isLoading: boolean;
+  loading: boolean; // alias for isLoading (keeps older consumers happy)
   fetchMe: () => Promise<UserShape | null>;
-  login: (email: string, password: string, rememberMe?: boolean) => Promise<any>;
+  login: (
+    email: string,
+    password: string,
+    rememberMe?: boolean
+  ) => Promise<any>;
   register: (name: string, email: string, password: string) => Promise<any>;
   logout: () => Promise<void>;
 };
@@ -50,10 +59,13 @@ function setClientTokenCookie(token: string | null) {
     document.cookie = `${name}=; path=/; Max-Age=0; samesite=lax`;
     return;
   }
-  const isLocal = typeof window !== "undefined" && window.location.hostname === "localhost";
+  const isLocal =
+    typeof window !== "undefined" && window.location.hostname === "localhost";
   const secure = !isLocal;
   // session cookie (no Max-Age) so it clears when session ends
-  document.cookie = `${name}=${encodeURIComponent(token)}; path=/; samesite=lax${secure ? "; secure" : ""}`;
+  document.cookie = `${name}=${encodeURIComponent(
+    token
+  )}; path=/; samesite=lax${secure ? "; secure" : ""}`;
 }
 
 function getClientTokenFromCookie(): string | null {
@@ -65,11 +77,15 @@ function getClientTokenFromCookie(): string | null {
 /**
  * fetchWithTimeout: small helper to avoid hanging requests in some environments.
  */
-async function fetchWithTimeout(input: RequestInfo, init?: RequestInit, timeout = 12000) {
+async function fetchWithTimeout(
+  input: RequestInfo,
+  init?: RequestInit,
+  timeout = 12000
+) {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeout);
   try {
-    const res = await fetch(input, { ...init, signal: controller.signal });
+    const res = await fetch(input, {...init, signal: controller.signal});
     clearTimeout(id);
     return res;
   } catch (err) {
@@ -81,7 +97,7 @@ async function fetchWithTimeout(input: RequestInfo, init?: RequestInit, timeout 
 /**
  * AuthProvider (default export) and useAuth hook (named export)
  */
-export default function AuthProvider({ children }: { children: React.ReactNode }) {
+export default function AuthProvider({children}: {children: React.ReactNode}) {
   const [user, setUser] = useState<UserShape | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
@@ -90,13 +106,17 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
     try {
       // 1) Try cookie-based /me
       try {
-        const res = await fetchWithTimeout(`${BACKEND}/api/auth/me`, {
-          credentials: "include",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
+        const res = await fetchWithTimeout(
+          `${BACKEND}/api/auth/me`,
+          {
+            credentials: "include",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
           },
-        }, 10000);
+          10000
+        );
 
         if (res.ok) {
           const data = await res.json();
@@ -112,13 +132,17 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
       const token = getClientTokenFromCookie();
       if (token) {
         try {
-          const res2 = await fetchWithTimeout(`${BACKEND}/api/auth/me`, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-              Accept: "application/json",
+          const res2 = await fetchWithTimeout(
+            `${BACKEND}/api/auth/me`,
+            {
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Content-Type": "application/json",
+                Accept: "application/json",
+              },
             },
-          }, 10000);
+            10000
+          );
 
           if (res2.ok) {
             const data2 = await res2.json();
@@ -149,8 +173,8 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
     const res = await fetchWithTimeout(`${BACKEND}/api/auth/login`, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password, rememberMe }),
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({email, password, rememberMe}),
     });
 
     const json = await res.json().catch(() => ({}));
@@ -169,8 +193,8 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
     const res = await fetchWithTimeout(`${BACKEND}/api/auth/register`, {
       method: "POST",
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, email, password }),
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({name, email, password}),
     });
 
     const json = await res.json().catch(() => ({}));
@@ -217,13 +241,16 @@ export default function AuthProvider({ children }: { children: React.ReactNode }
   const payload: AuthContextShape = {
     user,
     isLoading,
+    loading: isLoading, // alias for backward compatibility
     fetchMe,
     login,
     register,
     logout,
   };
 
-  return <AuthContext.Provider value={payload}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={payload}>{children}</AuthContext.Provider>
+  );
 }
 
 /**
