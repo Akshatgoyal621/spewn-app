@@ -2,7 +2,6 @@
 
 import React, {useMemo, useEffect, useState, useRef} from "react";
 import {useRouter} from "next/navigation";
-import {useAuth} from "../../lib/auth-client";
 import {DonutChart} from "@/charts/DonutChart";
 import {formatCurrency} from "@/utils/formatCurrency";
 import {useDeviceType} from "@/utils/useDeviceType";
@@ -15,6 +14,7 @@ import {
   sum as _sum,
   round as _round,
 } from "lodash";
+import { useAuth } from "@/lib/auth-client";
 
 /*
   DashboardInner (refactored + fixes)
@@ -80,10 +80,7 @@ function useKeyNavigation(listLength: number) {
 function DashboardInner() {
   const {isMobile} = useDeviceType();
   const router = useRouter();
-  const {user, fetchMe} = useAuth() as {
-    user?: UserProfile | null;
-    fetchMe?: () => Promise<void>;
-  };
+  const {user, fetchMe} = useAuth();
 
   const CARD_MIN_HEIGHT = 520; // px, ensures both side-by-side cards look equal
 
