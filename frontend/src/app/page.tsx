@@ -3,6 +3,7 @@ import {useState} from "react";
 import {useRouter} from "next/navigation";
 import {useAuth} from "../lib/auth-client";
 
+
 export default function Page() {
   const {user, fetchMe} = useAuth();
   const router = useRouter();
@@ -302,6 +303,7 @@ export default function Page() {
           </div>
         </div>
       )}
+     
     </main>
   );
 }
