@@ -454,5 +454,23 @@ app.delete("/api/transactions/:id", authMiddleware, async (req, res) => {
     }
 });
 
+//Auth password change
+app.post("/api/auth/change-password", authMiddleware, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) return res.status(400).json({ message: "currentPassword and newPassword required" });
+    const user = await User.findById(req.user._id);
+    const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!ok) return res.status(400).json({ message: "Current password is incorrect" });
+    const hash = await bcrypt.hash(newPassword, 10);
+    user.passwordHash = hash;
+    await user.save();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("change-password error", err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
 
 app.listen(PORT, () => console.log(`Backend running on http://localhost:${PORT}`));
