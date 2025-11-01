@@ -8,8 +8,11 @@ import Footer from "@/components/Footer";
 export const metadata = {
   title: "SPEWN",
   description: "SPEWN — split your salary",
+    icons: {
+   icon: "/logo-filled-transparent.png",
+     
+  },
 };
-
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
@@ -41,3 +44,5 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     </html>
   );
 }
+
+
