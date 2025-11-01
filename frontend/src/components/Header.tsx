@@ -165,7 +165,7 @@ export default function Header() {
             >
               <div>
                 <Image
-                  src="/spewn-logo-main.png"
+                  src="/spewn-logo-main-t.png"
                   alt="SPEWN"
                   width={100}
                   height={20}

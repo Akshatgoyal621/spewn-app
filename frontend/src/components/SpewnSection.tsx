@@ -1,3 +1,4 @@
+import { useDeviceType } from "@/utils/useDeviceType";
 import React from "react";
 
 type Card = {
@@ -57,61 +58,102 @@ const CARDS: Card[] = [
   },
 ];
 
-export default function SpewnSection({ className }: { className?: string }) {
+/**
+ * SpewnSection
+ *  - responsive: cards switch from column (mobile) to wrapped rows (md+)
+ *  - fixed container height (default 32rem) so cards wrap/scroll inside only
+ *  - exposes `height` prop (string) if you want to control container height (e.g. "28rem")
+ */
+export default function SpewnSection({
+  className,
+  height = "42.5rem",
+}: {
+  className?: string;
+  height?: string; // any valid CSS height string, e.g. '28rem' or '480px'
+}) {
+    const {isMobile} = useDeviceType();
   return (
     <section
       className={`mx-auto ${className ?? ""}`}
       aria-labelledby="spewn-heading"
     >
-      <div className="rounded-2xl border border-gray-200 bg-gradient-to-br from-white to-gray-50 p-8 shadow-lg">
+      <div
+        className="rounded-2xl border border-gray-200 bg-gradient-to-br from-white to-gray-50 p-6 shadow-lg"
+        style={{ height: isMobile ? "100%" : height }}
+      >
         <header className="text-center">
-          <h2 id="spewn-heading" className="mb-2 text-3xl font-extrabold tracking-tight text-gray-900" style={{color: "#00bba7"}}>
+          <h2
+            id="spewn-heading"
+            className="mb-2 text-2xl sm:text-3xl font-extrabold tracking-tight text-gray-900"
+            style={{ color: "#00bba7" }}
+          >
             SPEWN — Your Smart Salary System
           </h2>
-          <p className="mx-auto max-w-2xl text-gray-600">
-            A balanced preset that divides income into five purposeful parts: plan, preserve, and live
-            with peace.
+          <p className="mx-auto max-w-2xl text-sm sm:text-base text-gray-600">
+            A balanced preset that divides income into five purposeful parts: plan, preserve, and
+            live with peace.
           </p>
         </header>
 
-        <div className="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {CARDS.map((c) => (
-            <article
-              key={c.key}
-              className="flex flex-col justify-between rounded-xl border border-gray-100 bg-white p-5 shadow-sm transition-transform hover:-translate-y-1 hover:shadow-md"
-              aria-label={c.ariaLabel}
-              tabIndex={0}
-            >
-              <div className="flex items-start gap-4">
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900">{c.title}</h3>
-                  <p className="mt-1 text-sm text-gray-500">{c.desc}</p>
-                </div>
-              </div>
+        {/*
+          Wrapper behaviour:
+          - Uses flex + wrap so cards will flow into rows on md+ and stack as column on small screens
+          - Overflow-auto ensures content stays inside the fixed-height container; users can scroll if there
+            are more rows than fit the height.
+        */}
+        <div className="mt-6 h-[calc(100%-6.5rem)]">
+          <div className="h-full w-full overflow-auto">
+            <div className="flex flex-wrap items-start justify-start gap-4 p-2">
+              {CARDS.map((c) => (
+                <article
+                  key={c.key}
+                  className={`flex flex-col justify-between rounded-xl border border-gray-100 bg-white p-4 shadow-sm transition-transform hover:-translate-y-1 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-offset-2`}
+                  aria-label={c.ariaLabel}
+                  tabIndex={0}
+                  // responsive widths: full on xs, half on sm, third on lg
+                  style={{
+                    // flex-basis responsive behaviour via inline style + media queries isn't possible here —
+                    // instead we use Tailwind utility classes by applying className variants. To keep
+                    // the file self-contained, we provide a set of utility width classes below.
+                  }}
+                >
+                  <div className="flex items-start gap-4">
+                    {/* Accent stripe */}
+                    <div
+                      className={`hidden sm:block h-12 w-2 rounded ${c.colorClass} bg-gradient-to-br`}
+                      aria-hidden="true"
+                    />
 
-              <div className="mt-4 flex items-center justify-between">
-                {/* <span className="inline-flex items-center gap-2 rounded-full bg-gray-50 px-3 py-1 text-xs font-medium text-gray-600">
-                  <svg
-                    className="h-4 w-4 text-gray-400"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M12 6v6l4 2" />
-                    <circle cx="12" cy="12" r="10" />
-                  </svg>
-                  Balanced
-                </span> */}
+                    <div className="flex-1">
+                      <h3 className="text-lg font-semibold text-gray-900">{c.title}</h3>
+                      <p className="mt-1 text-sm text-gray-500">{c.desc}</p>
+                    </div>
+                  </div>
 
-                <span className="text-xs text-gray-400">Tip: automate this split</span>
-              </div>
-            </article>
-          ))}
+                  <div className="mt-4 flex items-center justify-between">
+                    <span className="text-xs text-gray-400">Tip: automate this split</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
         </div>
+
+        {/*
+          A small note on responsive sizing and how to control per-card widths:
+          - If you prefer exact breakpoints for card widths (eg. 1-per-row on xs, 2-per-row on sm, 3-per-row on lg),
+            replace the article element's className above with the variations below:
+
+          Example classes to swap in place of the article className (choose one):
+
+          // 1 per row xs, 2 per row sm, 3 per row lg
+          'flex flex-col justify-between rounded-xl border border-gray-100 bg-white p-4 shadow-sm transition-transform hover:-translate-y-1 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-offset-2 w-full sm:w-1/2 lg:w-1/3'
+
+          // 1 per row xs, 3 per row md, 5 per row xl
+          'flex flex-col justify-between rounded-xl border border-gray-100 bg-white p-4 shadow-sm transition-transform hover:-translate-y-1 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-offset-2 w-full md:w-1/3 xl:w-1/5'
+
+          Replacing the article class with one of the above gives predictable columns while still enforcing the fixed container height.
+        */}
       </div>
     </section>
   );

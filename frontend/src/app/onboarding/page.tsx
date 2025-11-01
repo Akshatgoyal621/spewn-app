@@ -396,7 +396,7 @@ function OnboardingInner() {
               </button>
             </div>
           </form>
-        </section>
+        </section> 
 
         <SpewnSection />
       </div>
