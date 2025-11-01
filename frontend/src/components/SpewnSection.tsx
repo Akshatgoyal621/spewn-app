@@ -34,7 +34,7 @@ const CARDS: Card[] = [
     letter: "E",
     title: "Extras / Buffer",
     desc:
-      "Life’s cushion. For surprises — the joyful and the rough. Extras protect your peace without shaking your stability.",
+      "Life’s cushion. For surprises — the joyful and the rough. Extras protect your peace without shaking your stability. Make room for spontaneity and security.",
     colorClass: "from-amber-400 to-amber-600",
     ariaLabel: "Extras and Buffer",
   },
