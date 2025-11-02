@@ -20,7 +20,7 @@ const {
     MONGODB_URI,
     JWT_SECRET,
     COOKIE_NAME = 'spewn_token',
-    COOKIE_DOMAIN= "",
+    COOKIE_DOMAIN = "",
     FRONTEND_URL = 'http://localhost:3000', // set to https://spewn-app.vercel.app in Render env
     DEV_FRONTEND_URL = 'http://localhost:3000',
     NODE_ENV = 'development'
@@ -32,41 +32,43 @@ if (NODE_ENV === 'production') {
 
 app.use(express.json());
 app.use(cookieParser());
-
-// Allowed origins: use the destructured vars (not process.env.* inside the array)
 const allowedOrigins = [FRONTEND_URL, DEV_FRONTEND_URL].filter(Boolean);
+console.log('allowedOrigins:', allowedOrigins);
 
-// dynamic-origin CORS options
 const corsOptions = {
     origin: function (origin, callback) {
-        // allow server-to-server requests or tools like curl that have no origin
+        // allow server-to-server / tools with no origin
         if (!origin) return callback(null, true);
 
-        if (allowedOrigins.indexOf(origin) !== -1) {
+        // exact-match check (no trailing slash, protocol+host must match)
+        if (allowedOrigins.includes(origin)) {
             return callback(null, true);
-        } else {
-            console.warn('CORS blocked origin:', origin);
-            return callback(new Error('CORS: Origin not allowed'), false);
         }
+
+        // don't throw — return false so middleware continues but without CORS headers.
+        // We still log so you can see blocked origins.
+        console.warn('CORS blocked origin:', origin);
+        return callback(null, false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
-    preflightContinue: false
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+    optionsSuccessStatus: 204 // older browsers sometimes choke on 200
 };
 
-// Apply CORS before routes
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // explicit preflight handling
 
-// Ensure responses indicate credentials allowed (some clients rely on this)
+// Explicit preflight handler that always replies with proper headers for allowed origins
+app.options('*', (req, res) => {
+    // Let cors set the headers when origin is allowed
+    cors(corsOptions)(req, res, () => res.sendStatus(204));
+});
+
+// Helpful explicit header for caches/proxies
 app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Credentials', 'true');
-    // Vary by origin helps caches and proxies not to reuse responses across origins
     res.header('Vary', 'Origin');
     next();
 });
-
 // DB connect (production expects MONGODB_URI)
 async function connectDB() {
     try {
